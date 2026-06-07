@@ -183,6 +183,20 @@ export default function App() {
   const [adminPassword, setAdminPassword] = useState<string>('');
   const [adminError, setAdminError] = useState<string>('');
   const [showAdminEntry, setShowAdminEntry] = useState<boolean>(false);
+  const [secretClickCount, setSecretClickCount] = useState<number>(0);
+
+  const triggerSecretAdmin = () => {
+    setSecretClickCount(prev => {
+      const next = prev + 1;
+      if (next >= 5) {
+        setShowAdminEntry(curr => !curr);
+        setAdminPassword('');
+        setAdminError('');
+        return 0; // reset
+      }
+      return next;
+    });
+  };
   
   // --- Admin Editing Forms State ---
   const [editingWork, setEditingWork] = useState<Partial<Work> | null>(null);
@@ -586,19 +600,12 @@ export default function App() {
               </button>
             ))}
 
-            {isAdmin ? (
+            {isAdmin && (
               <button 
                 onClick={() => { setHasEntered(true); navigateTo('ADMIN'); }}
                 className="hover:text-white transition-colors cursor-pointer ml-3 font-semibold text-[#4A6FA5]"
               >
                 CONSOLE
-              </button>
-            ) : (
-              <button 
-                onClick={() => { setHasEntered(true); setShowAdminEntry(true); }}
-                className="hover:text-white transition-colors cursor-pointer opacity-40 hover:opacity-100 ml-3"
-              >
-                <Lock size={12} />
               </button>
             )}
           </div>
@@ -733,7 +740,7 @@ export default function App() {
               </button>
             ))}
             
-            {isAdmin ? (
+            {isAdmin && (
               <div className="flex items-center gap-3 border-l border-gray-300/60 pl-3 ml-2">
                 <button 
                   onClick={() => navigateTo('ADMIN')} 
@@ -749,14 +756,6 @@ export default function App() {
                   LOGOUT
                 </button>
               </div>
-            ) : (
-              <button 
-                onClick={() => setShowAdminEntry(!showAdminEntry)} 
-                className="text-[#222222]/30 hover:text-[#4A6FA5] transition-colors cursor-pointer flex items-center gap-1 border-l border-gray-300/60 pl-3 ml-2"
-                title="관리자 인증"
-              >
-                <Lock size={11} />
-              </button>
             )}
           </div>
 
@@ -777,7 +776,7 @@ export default function App() {
               <div className="flex gap-2">
                 <input 
                   type="password" 
-                  placeholder="Password (e.g. 1619)" 
+                  placeholder="Enter Passcode" 
                   value={adminPassword}
                   onChange={(e) => setAdminPassword(e.target.value)}
                   className="bg-white border border-[#222222]/20 px-3 py-1.5 text-xs text-[#222222] tracking-widest focus:outline-none focus:border-[#4A6FA5] w-full text-center font-mono rounded"
@@ -2552,7 +2551,10 @@ export default function App() {
           )}
 
           {/* Column 3: Copyright (Right aligned on md+) */}
-          <div className="text-[9px] font-mono tracking-[0.15em] text-[#222222]/30 uppercase text-center md:text-right">
+          <div 
+            onClick={triggerSecretAdmin} 
+            className="text-[9px] font-mono tracking-[0.15em] text-[#222222]/30 uppercase text-center md:text-right cursor-pointer select-none active:opacity-60 transition-opacity"
+          >
             &copy; {new Date().getFullYear()} ALL RIGHTS RESERVED
           </div>
 
