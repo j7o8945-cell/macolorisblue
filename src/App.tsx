@@ -124,6 +124,60 @@ const deleteVideoFromIndexedDB = (): Promise<void> => {
   });
 };
 
+const compressImageFile = (file: File, maxW = 1200, maxH = 1200, quality = 0.75): Promise<string> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        if (width > height) {
+          if (width > maxW) {
+            height = Math.round((height * maxW) / width);
+            width = maxW;
+          }
+        } else {
+          if (height > maxH) {
+            width = Math.round((width * maxH) / height);
+            height = maxH;
+          }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        } else {
+          resolve(e.target?.result as string);
+        }
+      };
+      img.onerror = () => {
+        resolve(e.target?.result as string);
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => {
+      resolve('');
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
+const isVideoUrl = (url: string): boolean => {
+  if (!url) return false;
+  if (url.includes('#video')) return true;
+  return url.startsWith('data:video/') || 
+         url.toLowerCase().endsWith('.mp4') || 
+         url.toLowerCase().endsWith('.mov') || 
+         url.toLowerCase().endsWith('.quicktime') || 
+         url.toLowerCase().endsWith('.webm');
+};
+
 export default function App() {
   // --- Persistent States ---
   const [works, setWorks] = useState<Work[]>([]);
@@ -350,8 +404,21 @@ export default function App() {
     if (videoSource === 'indexeddb') {
       loadVideoFromIndexedDB().then(blob => {
         if (blob) {
-          const objUrl = URL.createObjectURL(blob);
-          setVideoUrl(objUrl);
+          // Safari/iOS blocks dynamic blob URL range queries, causing a black screen.
+          // Converting smaller files instantly to Base64 allows Safari's out-of-process renderer to decode and play smoothly.
+          const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+          if (isIOS || blob.size < 12 * 1024 * 1024) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              if (typeof reader.result === 'string') {
+                setVideoUrl(reader.result);
+              }
+            };
+            reader.readAsDataURL(blob);
+          } else {
+            const objUrl = URL.createObjectURL(blob);
+            setVideoUrl(objUrl);
+          }
         } else {
           // fallback
           const savedUrl = localStorage.getItem('macoloris_video_url') || 'video.mp4';
@@ -370,21 +437,50 @@ export default function App() {
     }
   }, []);
 
+  // Sync body background color with entry state to prevent any white gap, scroll borders, or page cuts during intro
+  useEffect(() => {
+    if (!hasEntered) {
+      document.body.style.backgroundColor = '#121212';
+    } else {
+      document.body.style.backgroundColor = ''; // Restores standard off-white theme
+    }
+    return () => {
+      document.body.style.backgroundColor = '';
+    };
+  }, [hasEntered]);
+
   // Programmatically trigger video load & play to bypass aggressive mobile browser restrictions
   useEffect(() => {
     if (videoRef.current) {
-      try {
-        videoRef.current.load();
-        const playPromise = videoRef.current.play();
+      const video = videoRef.current;
+      video.muted = true;
+      video.defaultMuted = true;
+      video.playsInline = true;
+      video.setAttribute('muted', '');
+      video.setAttribute('playsinline', '');
+      
+      const playVideo = () => {
+        const playPromise = video.play();
         if (playPromise !== undefined) {
           playPromise.catch(error => {
-            console.log("Autoplay was prevented by mobile browser. Retrying muted play:", error);
-            if (videoRef.current) {
-              videoRef.current.muted = true;
-              videoRef.current.play().catch(e => console.log("Final muted play failed:", e));
-            }
+            console.log("Autoplay was prevented by mobile browser. Retrying muted play on action:", error);
+            const startPlay = () => {
+              video.play().catch(e => console.log("Play failed after interaction:", e));
+              document.removeEventListener('touchstart', startPlay);
+              document.removeEventListener('click', startPlay);
+            };
+            document.addEventListener('touchstart', startPlay, { passive: true });
+            document.addEventListener('click', startPlay, { passive: true });
           });
         }
+      };
+
+      try {
+        video.load();
+        const timer = setTimeout(() => {
+          playVideo();
+        }, 80);
+        return () => clearTimeout(timer);
       } catch (err) {
         console.error("Video play control error:", err);
       }
@@ -417,8 +513,21 @@ export default function App() {
         try {
           await saveVideoToIndexedDB(tempVideoFile);
           localStorage.setItem('macoloris_video_source', 'indexeddb');
-          localStorage.setItem('macoloris_video_url', tempVideoUrl);
-          setVideoUrl(tempVideoUrl);
+          
+          const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+          if (isIOS || tempVideoFile.size < 12 * 1024 * 1024) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              if (typeof reader.result === 'string') {
+                localStorage.setItem('macoloris_video_url', 'indexeddb_data');
+                setVideoUrl(reader.result);
+              }
+            };
+            reader.readAsDataURL(tempVideoFile);
+          } else {
+            localStorage.setItem('macoloris_video_url', tempVideoUrl);
+            setVideoUrl(tempVideoUrl);
+          }
           setTempVideoFile(null);
         } catch (err) {
           console.error("IndexedDB video save error:", err);
@@ -451,12 +560,28 @@ export default function App() {
   // --- Save helpers ---
   const saveWorksToStorage = (newWorks: Work[]) => {
     setWorks(newWorks);
-    localStorage.setItem('macoloris_works', JSON.stringify(newWorks));
+    try {
+      localStorage.setItem('macoloris_works', JSON.stringify(newWorks));
+    } catch (e: any) {
+      if (e.name === 'QuotaExceededError' || e.code === 22) {
+        alert("⚠️ 브라우저의 저장 용량 한도(5MB~10MB)를 초과하여 게시물이 로컬에 저장되지 못했습니다. 새로 추가하시려는 동영상/이미지 파일의 용량이 너무 큽니다. 모바일 및 웹에서의 쾌적한 재생을 위해 5MB 이하 수준으로 압축된 MP4(동영상) 또는 JPEG(사진) 파일을 업로드하는 것을 절대 권장합니다.");
+      } else {
+        console.error("Storage save error:", e);
+      }
+    }
   };
 
   const saveJournalsToStorage = (newJournals: Journal[]) => {
     setJournals(newJournals);
-    localStorage.setItem('macoloris_journals', JSON.stringify(newJournals));
+    try {
+      localStorage.setItem('macoloris_journals', JSON.stringify(newJournals));
+    } catch (e: any) {
+      if (e.name === 'QuotaExceededError' || e.code === 22) {
+        alert("⚠️ 브라우저의 저장 용량 한도(5MB~10MB)를 초과하여 저널이 로컬에 저장되지 못했습니다. 동영상/이미지 파일의 해상도나 용량을 약간 줄여서 압축된 파일로 재업로드하십시오.");
+      } else {
+        console.error("Storage save error:", e);
+      }
+    }
   };
 
   const saveAboutToStorage = (newAbout: AboutInfo) => {
@@ -721,21 +846,19 @@ export default function App() {
   // If before first entrance, render full screen video cover exactly as requested
   if (!hasEntered) {
     return (
-      <div className="relative w-full h-screen min-h-[600px] md:min-h-[650px] bg-[#1a1a1a] text-white font-serif select-none flex flex-col justify-between p-6 md:p-12 z-0 overflow-hidden">
+      <div className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden">
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden">
           <video 
             ref={videoRef}
             key={videoUrl}
+            src={videoUrl}
             autoPlay 
             loop 
             muted 
             playsInline 
             className="w-full h-full object-cover opacity-80"
-          >
-            <source src={videoUrl} type="video/mp4" />
-            <source src={videoUrl} type="video/quicktime" />
-          </video>
+          />
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65"></div>
           <div className="absolute inset-0 bg-black/30"></div>
@@ -1264,12 +1387,24 @@ export default function App() {
                     >
                       {/* Photo wrapper: vertical elegant portraits on mobile, standards on desktop */}
                       <div className={`aspect-[3/4] sm:aspect-[3/2] ${cardBg} mb-1 relative overflow-hidden rounded-[1.5px] border border-black/[0.015] shadow-3xs transition-all duration-500`}>
-                        <img 
-                          src={work.images[0] || PHOTO_PRESETS[0].url} 
-                          alt={work.title} 
-                          className="w-full h-full object-cover transition-transform duration-[1250ms] ease-out group-hover:scale-105"
-                          referrerPolicy="no-referrer"
-                        />
+                        {isVideoUrl(work.images[0] || '') ? (
+                          <video 
+                            key={work.images[0]}
+                            src={work.images[0]} 
+                            autoPlay 
+                            loop 
+                            muted 
+                            playsInline 
+                            className="w-full h-full object-cover transition-transform duration-[1250ms] ease-out group-hover:scale-105"
+                          />
+                        ) : (
+                          <img 
+                            src={work.images[0] || PHOTO_PRESETS[0].url} 
+                            alt={work.title} 
+                            className="w-full h-full object-cover transition-transform duration-[1250ms] ease-out group-hover:scale-105"
+                            referrerPolicy="no-referrer"
+                          />
+                        )}
                         <div className="absolute inset-0 bg-[#4A6FA5]/3 opacity-100 group-hover:opacity-0 transition-opacity duration-300"></div>
                         <div className="absolute bottom-1.5 left-1.5 text-white text-[7px] tracking-widest opacity-0 group-hover:opacity-100 transition-opacity font-mono bg-[#4A6FA5]/95 px-1.5 py-0.5 backdrop-blur-3xs rounded-[1px]">
                           VIEW
@@ -1339,12 +1474,24 @@ export default function App() {
                 }}
                 className="cursor-pointer max-w-full max-h-[66vh] overflow-hidden bg-[#E8E7E2]/15 border border-black/[0.015] rounded-[1.5px] transition-all duration-300 transform hover:brightness-102"
               >
-                <img 
-                  src={activeWorkDetail.images[activePhotoIndex] || PHOTO_PRESETS[0].url} 
-                  alt={`${activeWorkDetail.title} - ${activePhotoIndex + 1}`} 
-                  className="max-h-[64vh] max-w-full w-auto object-contain mx-auto shadow-2xs"
-                  referrerPolicy="no-referrer"
-                />
+                {isVideoUrl(activeWorkDetail.images[activePhotoIndex] || '') ? (
+                  <video 
+                    key={activeWorkDetail.images[activePhotoIndex]}
+                    src={activeWorkDetail.images[activePhotoIndex]} 
+                    autoPlay 
+                    loop 
+                    muted 
+                    playsInline 
+                    className="max-h-[64vh] max-w-full w-auto object-contain mx-auto shadow-2xs"
+                  />
+                ) : (
+                  <img 
+                    src={activeWorkDetail.images[activePhotoIndex] || PHOTO_PRESETS[0].url} 
+                    alt={`${activeWorkDetail.title} - ${activePhotoIndex + 1}`} 
+                    className="max-h-[64vh] max-w-full w-auto object-contain mx-auto shadow-2xs"
+                    referrerPolicy="no-referrer"
+                  />
+                )}
               </div>
             </div>
 
@@ -1442,12 +1589,24 @@ export default function App() {
                   >
                     {/* Thumbnail Side styled like the Design HTML slots */}
                     <div className={`w-full md:w-1/3 aspect-[4/3] md:aspect-[3/2] ${itemBg} overflow-hidden rounded relative border border-black/[0.02]`}>
-                      <img 
-                        src={work.images[0] || PHOTO_PRESETS[0].url} 
-                        alt={work.title} 
-                        className="w-full h-full object-cover transition-transform duration-750 ease-out group-hover:scale-105"
-                        referrerPolicy="no-referrer"
-                      />
+                      {isVideoUrl(work.images[0] || '') ? (
+                        <video 
+                          key={work.images[0]}
+                          src={work.images[0]} 
+                          autoPlay 
+                          loop 
+                          muted 
+                          playsInline 
+                          className="w-full h-full object-cover transition-transform duration-750 ease-out group-hover:scale-105"
+                        />
+                      ) : (
+                        <img 
+                          src={work.images[0] || PHOTO_PRESETS[0].url} 
+                          alt={work.title} 
+                          className="w-full h-full object-cover transition-transform duration-750 ease-out group-hover:scale-105"
+                          referrerPolicy="no-referrer"
+                        />
+                      )}
                       <div className="absolute inset-0 bg-[#4A6FA5]/5 group-hover:opacity-0 transition-opacity"></div>
                     </div>
                     
@@ -1633,12 +1792,24 @@ export default function App() {
                             className="group cursor-pointer flex flex-col transition-all duration-300 transform hover:-translate-y-0.5"
                           >
                             <div className={`aspect-[3/2] ${cardBg} mb-2 relative overflow-hidden rounded-[2px] border border-black/[0.02] shadow-2xs hover:shadow-xs transition-all duration-500`}>
-                              <img 
-                                src={matchingWork.images[0]} 
-                                alt={matchingWork.title} 
-                                className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-                                referrerPolicy="no-referrer"
-                              />
+                              {isVideoUrl(matchingWork.images[0] || '') ? (
+                                <video 
+                                  key={matchingWork.images[0]}
+                                  src={matchingWork.images[0]} 
+                                  autoPlay 
+                                  loop 
+                                  muted 
+                                  playsInline 
+                                  className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                />
+                              ) : (
+                                <img 
+                                  src={matchingWork.images[0]} 
+                                  alt={matchingWork.title} 
+                                  className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                  referrerPolicy="no-referrer"
+                                />
+                              )}
                               <div className="absolute inset-0 bg-[#4A6FA5]/5 opacity-100 group-hover:opacity-0 transition-opacity"></div>
                             </div>
                             
@@ -1707,12 +1878,24 @@ export default function App() {
                       const cardBg = bgColors[imageIndex % bgColors.length];
                       return (
                         <div key={imageIndex} className={`${cardBg} overflow-hidden border border-black/[0.02] rounded aspect-[4/3]`}>
-                          <img 
-                            src={imgUrl} 
-                            alt={`${post.title} - ${imageIndex + 1}`} 
-                            className="w-full h-full object-cover transition-transform duration-500 hover:scale-103"
-                            referrerPolicy="no-referrer"
-                          />
+                          {isVideoUrl(imgUrl) ? (
+                            <video 
+                              key={imgUrl}
+                              src={imgUrl} 
+                              autoPlay 
+                              loop 
+                              muted 
+                              playsInline 
+                              className="w-full h-full object-cover transition-transform duration-500 hover:scale-103"
+                            />
+                          ) : (
+                            <img 
+                              src={imgUrl} 
+                              alt={`${post.title} - ${imageIndex + 1}`} 
+                              className="w-full h-full object-cover transition-transform duration-500 hover:scale-103"
+                              referrerPolicy="no-referrer"
+                            />
+                          )}
                         </div>
                       );
                     })}
@@ -2004,77 +2187,126 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Image URL sequence manager */}
+                    {/* Local File Uploader with Drop & Drag indicator and clear button */}
                     <div className="mb-4">
-                      <label className="block font-mono text-[10px] text-[#222222]/70 uppercase mb-1">
-                        사진 가상 리스트 (URLs - 쉼표로 구분 또는 아래 프리셋 사진 클릭하여 등록)
-                      </label>
-                      <textarea 
-                        rows={3}
-                        placeholder="쉼표(,)로 각 이미지 주소를 작성합시요."
-                        value={editingWork.images ? editingWork.images.join(',\n') : ''}
-                        onChange={(e) => setEditingWork({
-                          ...editingWork, 
-                          images: e.target.value.split(',').map(s => s.trim()).filter(s => s.length > 0)
-                        })}
-                        className="w-full bg-white p-2 border border-[#222222]/15 rounded font-mono text-[10px]"
-                      />
-
-
-                      {/* Local File Uploader with Drop & Drag indicator and clear button */}
+                      {/* Local File Uploader for images and video */}
                       <div className="mt-3">
-                        <span className="block text-[9px] text-[#222222]/60 uppercase mb-1 font-bold">📂 로컬 이미지 파일 업로드:</span>
+                        <span className="block text-[9px] text-[#222222]/60 uppercase mb-1 font-bold">📂 로컬 미디어 파일 업로드 (이미지 및 동영상):</span>
                         <div className="border-2 border-dashed border-[#4A6FA5]/30 hover:border-[#4A6FA5] hover:bg-[#4A6FA5]/5 p-4 rounded text-center transition-colors cursor-pointer relative">
                           <input
                             type="file"
-                            accept="image/*"
+                            accept="image/*,video/*"
                             multiple
                             onChange={(e) => {
                               if (e.target.files) {
-                                const filesArray = Array.from(e.target.files);
-                                filesArray.forEach(file => {
-                                  const reader = new FileReader();
-                                  reader.onloadend = () => {
-                                    if (typeof reader.result === 'string') {
-                                      setEditingWork(prev => {
-                                        if (!prev) return null;
-                                        const currentImgs = prev.images || [];
-                                        return {
-                                          ...prev,
-                                          images: [...currentImgs, reader.result as string]
-                                        };
-                                      });
+                                const filesArray = Array.from(e.target.files) as File[];
+                                filesArray.forEach(async (file) => {
+                                  try {
+                                    if (file.type.startsWith('video/')) {
+                                      if (file.size > 15 * 1024 * 1024) {
+                                        alert("경고: 업로드하신 동영상 크기가 15MB를 초과합니다. 쾌적한 재생을 위해 가급적 5M~10MB 내외의 비디오 파일을 권장합니다.");
+                                      }
+                                      const reader = new FileReader();
+                                      reader.onloadend = () => {
+                                        if (typeof reader.result === 'string') {
+                                          const videoDataUrl = reader.result;
+                                          setEditingWork(prev => {
+                                            if (!prev) return null;
+                                            const currentImgs = prev.images || [];
+                                            return {
+                                              ...prev,
+                                              images: [...currentImgs, videoDataUrl]
+                                            };
+                                          });
+                                        }
+                                      };
+                                      reader.readAsDataURL(file);
+                                    } else {
+                                      const compressedData = await compressImageFile(file as File);
+                                      if (compressedData) {
+                                        setEditingWork(prev => {
+                                          if (!prev) return null;
+                                          const currentImgs = prev.images || [];
+                                          return {
+                                            ...prev,
+                                            images: [...currentImgs, compressedData]
+                                          };
+                                        });
+                                      }
                                     }
-                                  };
-                                  reader.readAsDataURL(file as any);
+                                  } catch (err) {
+                                    console.error("Image/video loading error:", err);
+                                  }
                                 });
                               }
                             }}
                             className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                           />
-                          <p className="text-[10px] font-mono text-[#222222]/70">📷 클릭하거나 이미지를 드래그하여 업로드 (다중 선택 가능)</p>
-                          <p className="text-[8px] text-[#222222]/40 mt-0.5">선택된 이미지는 이미지 리스트에 즉시 추가됩니다.</p>
+                          <p className="text-[10px] font-mono text-[#222222]/70">📷 클릭하거나 이미지를 드래그하여 업로드 (사진/동영상 다중 선택 가능)</p>
+                          <p className="text-[8px] text-[#222222]/40 mt-0.5">선택된 미디어는 아래 목록에 즉시 추가됩니다.</p>
                         </div>
                         {editingWork.images && editingWork.images.length > 0 && (
-                          <div className="mt-2">
-                            <span className="text-[9px] text-gray-500 block mb-1">등록된 사진 목록 ({editingWork.images.length}개):</span>
-                            <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto bg-stone-100 p-2 rounded border">
+                          <div className="mt-3">
+                            <span className="text-[9px] text-gray-500 block mb-1 font-bold">등록된 미디어 목록 ({editingWork.images.length}개) - 마우스를 각 항목 위에 올리면 순서 변경 및 삭제 버튼이 활성화됩니다:</span>
+                            <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto bg-stone-100 p-2 rounded border">
                               {editingWork.images.map((img, idx) => (
-                                <div key={idx} className="relative w-12 h-12 rounded overflow-hidden border">
-                                  <img src={img} className="w-full h-full object-cover" alt="Preview" referrerPolicy="no-referrer" />
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setEditingWork({
-                                        ...editingWork,
-                                        images: editingWork.images?.filter((_, i) => i !== idx)
-                                      });
-                                    }}
-                                    className="absolute inset-0 bg-black/40 flex items-center justify-center text-white text-[8px] uppercase font-bold opacity-0 hover:opacity-100 transition-opacity"
-                                    title="삭제"
-                                  >
-                                    삭제
-                                  </button>
+                                <div key={idx} className="relative w-16 h-16 rounded overflow-hidden border bg-stone-200 group/workmedia flex flex-col justify-between">
+                                  {isVideoUrl(img) ? (
+                                    <video src={img} className="w-full h-full object-cover" muted playsInline />
+                                  ) : (
+                                    <img src={img} className="w-full h-full object-cover" alt="Preview" referrerPolicy="no-referrer" />
+                                  )}
+                                  
+                                  {/* Hover Control Overlay with Reordering and Delete */}
+                                  <div className="absolute inset-0 bg-black/60 flex flex-col justify-between p-1 opacity-0 group-hover/workmedia:opacity-100 transition-opacity">
+                                    <div className="flex justify-between w-full">
+                                      <button
+                                        type="button"
+                                        disabled={idx === 0}
+                                        onClick={() => {
+                                          const newImages = [...editingWork.images];
+                                          const temp = newImages[idx];
+                                          newImages[idx] = newImages[idx - 1];
+                                          newImages[idx - 1] = temp;
+                                          setEditingWork({ ...editingWork, images: newImages });
+                                        }}
+                                        className="text-white disabled:opacity-30 hover:bg-stone-850 bg-black/50 px-1 rounded text-[8px] font-mono cursor-pointer"
+                                        title="앞으로 이동"
+                                      >
+                                        ◀
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={idx === editingWork.images.length - 1}
+                                        onClick={() => {
+                                          const newImages = [...editingWork.images];
+                                          const temp = newImages[idx];
+                                          newImages[idx] = newImages[idx + 1];
+                                          newImages[idx + 1] = temp;
+                                          setEditingWork({ ...editingWork, images: newImages });
+                                        }}
+                                        className="text-white disabled:opacity-30 hover:bg-stone-850 bg-black/50 px-1 rounded text-[8px] font-mono cursor-pointer"
+                                        title="뒤로 이동"
+                                      >
+                                        ▶
+                                      </button>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingWork({
+                                          ...editingWork,
+                                          images: editingWork.images.filter((_, i) => i !== idx)
+                                        });
+                                      }}
+                                      className="bg-red-600 hover:bg-red-700 text-white w-full py-0.5 rounded text-[8px] text-center font-bold tracking-wider cursor-pointer font-sans"
+                                    >
+                                      삭제
+                                    </button>
+                                  </div>
+                                  <div className="absolute bottom-0 right-0 bg-black/50 text-white font-mono text-[8px] px-1 rounded-tl">
+                                    #{idx + 1}
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -2150,12 +2382,21 @@ export default function App() {
                           </button>
                         </div>
 
-                        <img 
-                          src={work.images[0]} 
-                          className="w-12 h-10 object-cover rounded shadow-3xs" 
-                          alt="Thumbnail admin"
-                          referrerPolicy="no-referrer"
-                        />
+                        {isVideoUrl(work.images[0] || '') ? (
+                          <video 
+                            src={work.images[0]} 
+                            className="w-12 h-10 object-cover rounded shadow-3xs" 
+                            muted
+                            playsInline
+                          />
+                        ) : (
+                          <img 
+                            src={work.images[0]} 
+                            className="w-12 h-10 object-cover rounded shadow-3xs" 
+                            alt="Thumbnail admin"
+                            referrerPolicy="no-referrer"
+                          />
+                        )}
                         <div>
                           <p className="font-serif-ja font-bold text-xs text-[#222222]">{work.title}</p>
                           <span className="font-mono text-[9px] text-[#222222]/50">
@@ -2620,16 +2861,17 @@ export default function App() {
                                 <input
                                   type="file"
                                   accept="image/*"
-                                  onChange={(e) => {
+                                  onChange={async (e) => {
                                     const file = e.target.files?.[0];
                                     if (file) {
-                                      const reader = new FileReader();
-                                      reader.onloadend = () => {
-                                        if (typeof reader.result === 'string') {
-                                          setEditingCustomTab({ ...editingCustomTab, image: reader.result });
+                                      try {
+                                        const compressedData = await compressImageFile(file);
+                                        if (compressedData) {
+                                          setEditingCustomTab({ ...editingCustomTab, image: compressedData });
                                         }
-                                      };
-                                      reader.readAsDataURL(file as any);
+                                      } catch (err) {
+                                        console.error("Custom tab banner upload error:", err);
+                                      }
                                     }
                                   }}
                                   className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
@@ -2805,71 +3047,123 @@ export default function App() {
                           required
                         />
                       </div>
-                      <div>
-                        <label className="block font-mono text-[9px] uppercase">사진 링크 (쉼표 구분)</label>
-                        <input 
-                          type="text" 
-                          value={editingJournal.images ? editingJournal.images.join(', ') : ''}
-                          onChange={(e) => setEditingJournal({
-                            ...editingJournal,
-                            images: e.target.value.split(',').map(s=>s.trim()).filter(Boolean)
-                          })}
-                          className="w-full bg-white p-1.5 border border-[#222222]/15 rounded text-xs font-mono"
-                        />
-                      </div>
-
-                      {/* Journal Local Image File Uploader */}
-                      <div className="mt-1">
-                        <span className="block text-[9px] uppercase font-mono font-bold mb-1">📂 로컬 이미지 파일 업로드:</span>
+                      {/* Local File Uploader for Journal images and videos */}
+                      <div className="mt-2">
+                        <span className="block text-[9px] uppercase font-mono font-bold mb-1">📂 로컬 미디어 파일 업로드 (이미지 및 동영상):</span>
                         <div className="border-2 border-dashed border-[#4A6FA5]/30 hover:border-[#4A6FA5] hover:bg-[#4A6FA5]/5 p-3 rounded text-center transition-colors cursor-pointer relative">
                           <input 
                             type="file"
-                            accept="image/*"
+                            accept="image/*,video/*"
                             multiple
                             onChange={(e) => {
                               if (e.target.files) {
-                                const filesArray = Array.from(e.target.files);
-                                filesArray.forEach(file => {
-                                  const reader = new FileReader();
-                                  reader.onloadend = () => {
-                                    if (typeof reader.result === 'string') {
-                                      setEditingJournal(prev => {
-                                        if (!prev) return null;
-                                        const currentImgs = prev.images || [];
-                                        return {
-                                          ...prev,
-                                          images: [...currentImgs, reader.result as string]
-                                        };
-                                      });
+                                const filesArray = Array.from(e.target.files) as File[];
+                                filesArray.forEach(async (file) => {
+                                  try {
+                                    if (file.type.startsWith('video/')) {
+                                      if (file.size > 15 * 1024 * 1024) {
+                                        alert("경고: 업로드하신 동영상 크기가 15MB를 초과합니다. 쾌적한 재생을 위해 가급적 5M~10MB 내외의 비디오 파일을 권장합니다.");
+                                      }
+                                      const reader = new FileReader();
+                                      reader.onloadend = () => {
+                                        if (typeof reader.result === 'string') {
+                                          const videoDataUrl = reader.result;
+                                          setEditingJournal(prev => {
+                                            if (!prev) return null;
+                                            const currentImgs = prev.images || [];
+                                            return {
+                                              ...prev,
+                                              images: [...currentImgs, videoDataUrl]
+                                            };
+                                          });
+                                        }
+                                      };
+                                      reader.readAsDataURL(file);
+                                    } else {
+                                      const compressedData = await compressImageFile(file as File);
+                                      if (compressedData) {
+                                        setEditingJournal(prev => {
+                                          if (!prev) return null;
+                                          const currentImgs = prev.images || [];
+                                          return {
+                                            ...prev,
+                                            images: [...currentImgs, compressedData]
+                                          };
+                                        });
+                                      }
                                     }
-                                  };
-                                  reader.readAsDataURL(file as any);
+                                  } catch (err) {
+                                    console.error("Journal image/video compression error:", err);
+                                  }
                                 });
                               }
                             }}
                             className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                           />
-                          <p className="text-[10px] text-[#222222]/70 font-mono">📷 클릭하거나 이미지를 드래그하여 업로드 (다중)</p>
+                          <p className="text-[10px] text-[#222222]/70 font-mono">📷 클릭하거나 미디어를 드래그하여 업로드 (사진/동영상 다중 선택 가능)</p>
                         </div>
                         {editingJournal.images && editingJournal.images.length > 0 && (
-                          <div className="mt-2 text-[9px]">
-                            <span className="text-gray-500 block mb-1">등록된 사진 목록 ({editingJournal.images.length}개):</span>
-                            <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto bg-stone-100 p-1.5 rounded border">
+                          <div className="mt-3 text-[9px]">
+                            <span className="text-gray-500 block mb-1 font-bold">등록된 미디어 목록 ({editingJournal.images.length}개) - 마우스를 올리면 순서를 재배치하거나 제거할 수 있습니다:</span>
+                            <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto bg-stone-100 p-2 rounded border">
                               {editingJournal.images.map((img, idx) => (
-                                <div key={idx} className="relative w-10 h-10 rounded overflow-hidden border font-sans">
-                                  <img src={img} className="w-full h-full object-cover" alt="Preview" referrerPolicy="no-referrer" />
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setEditingJournal({
-                                        ...editingJournal,
-                                        images: editingJournal.images?.filter((_, i) => i !== idx)
-                                      });
-                                    }}
-                                    className="absolute inset-0 bg-black/40 flex items-center justify-center text-white text-[7px] font-bold opacity-0 hover:opacity-100 transition-opacity"
-                                  >
-                                    삭제
-                                  </button>
+                                <div key={idx} className="relative w-16 h-16 rounded overflow-hidden border bg-stone-200 group/journalmedia flex flex-col justify-between">
+                                  {isVideoUrl(img) ? (
+                                    <video src={img} className="w-full h-full object-cover" muted playsInline />
+                                  ) : (
+                                    <img src={img} className="w-full h-full object-cover" alt="Preview" referrerPolicy="no-referrer" />
+                                  )}
+                                  
+                                  {/* Hover Control Overlay with Reordering and Delete */}
+                                  <div className="absolute inset-0 bg-black/60 flex flex-col justify-between p-1 opacity-0 group-hover/journalmedia:opacity-100 transition-opacity">
+                                    <div className="flex justify-between w-full">
+                                      <button
+                                        type="button"
+                                        disabled={idx === 0}
+                                        onClick={() => {
+                                          const newImages = [...editingJournal.images];
+                                          const temp = newImages[idx];
+                                          newImages[idx] = newImages[idx - 1];
+                                          newImages[idx - 1] = temp;
+                                          setEditingJournal({ ...editingJournal, images: newImages });
+                                        }}
+                                        className="text-white disabled:opacity-30 hover:bg-stone-850 bg-black/50 px-1 rounded text-[8px] font-mono cursor-pointer"
+                                        title="앞으로 이동"
+                                      >
+                                        ◀
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={idx === editingJournal.images.length - 1}
+                                        onClick={() => {
+                                          const newImages = [...editingJournal.images];
+                                          const temp = newImages[idx];
+                                          newImages[idx] = newImages[idx + 1];
+                                          newImages[idx + 1] = temp;
+                                          setEditingJournal({ ...editingJournal, images: newImages });
+                                        }}
+                                        className="text-white disabled:opacity-30 hover:bg-stone-850 bg-black/50 px-1 rounded text-[8px] font-mono cursor-pointer"
+                                        title="뒤로 이동"
+                                      >
+                                        ▶
+                                      </button>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingJournal({
+                                          ...editingJournal,
+                                          images: editingJournal.images.filter((_, i) => i !== idx)
+                                        });
+                                      }}
+                                      className="bg-red-600 hover:bg-red-700 text-white w-full py-0.5 rounded text-[8px] text-center font-bold tracking-wider cursor-pointer font-sans"
+                                    >
+                                      삭제
+                                    </button>
+                                  </div>
+                                  <div className="absolute bottom-0 right-0 bg-black/50 text-white font-mono text-[8px] px-1 rounded-tl">
+                                    #{idx + 1}
+                                  </div>
                                 </div>
                               ))}
                             </div>
