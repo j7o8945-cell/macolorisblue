@@ -178,6 +178,7 @@ export default function App() {
   const [activePhotoIndex, setActivePhotoIndex] = useState<number>(0);
   const [showDetailInfo, setShowDetailInfo] = useState<boolean>(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [coverMobileMenuOpen, setCoverMobileMenuOpen] = useState<boolean>(false);
   
   // --- Admin States ---
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
@@ -185,6 +186,13 @@ export default function App() {
   const [adminError, setAdminError] = useState<string>('');
   const [showAdminEntry, setShowAdminEntry] = useState<boolean>(false);
   const [secretClickCount, setSecretClickCount] = useState<number>(0);
+
+  // --- Admin Settings Temporary Workspaces ---
+  const [tempAbout, setTempAbout] = useState<AboutInfo | null>(null);
+  const [tempContact, setTempContact] = useState<ContactInfo | null>(null);
+  const [tempVideoUrl, setTempVideoUrl] = useState<string>('');
+  const [tempVisibleSections, setTempVisibleSections] = useState<any>(null);
+  const [settingsSavedMessage, setSettingsSavedMessage] = useState<string>('');
 
   const triggerSecretAdmin = () => {
     setSecretClickCount(prev => {
@@ -245,6 +253,41 @@ export default function App() {
       localStorage.setItem('macoloris_contact', JSON.stringify(INITIAL_CONTACT));
     }
   }, []);
+
+  // --- Admin settings sync workspace ---
+  useEffect(() => {
+    if (activeTab === 'ADMIN' && isAdmin) {
+      setTempAbout({ ...about });
+      setTempContact({ ...contact });
+      setTempVideoUrl(videoUrl);
+      setTempVisibleSections({ ...visibleSections });
+      setSettingsSavedMessage('');
+    }
+  }, [activeTab, isAdmin]);
+
+  const handleSaveAllSettings = () => {
+    if (tempAbout && tempContact && tempVisibleSections) {
+      // 1. Save About
+      setAbout({ ...tempAbout });
+      localStorage.setItem('macoloris_about', JSON.stringify(tempAbout));
+      
+      // 2. Save Contact
+      setContact({ ...tempContact });
+      localStorage.setItem('macoloris_contact', JSON.stringify(tempContact));
+      
+      // 3. Save Video Url
+      setVideoUrl(tempVideoUrl);
+      localStorage.setItem('macoloris_video_url', tempVideoUrl);
+      
+      // 4. Save Visible Sections
+      setVisibleSections({ ...tempVisibleSections });
+      localStorage.setItem('macoloris_visible_sections', JSON.stringify(tempVisibleSections));
+      
+      // 5. Show save complete message
+      setSettingsSavedMessage('✨ 모든 기본 설정과 인트로 영상이 정상적으로 저장되었습니다!');
+      setTimeout(() => setSettingsSavedMessage(''), 5500);
+    }
+  };
 
   // --- Save helpers ---
   const saveWorksToStorage = (newWorks: Work[]) => {
@@ -519,10 +562,11 @@ export default function App() {
   // If before first entrance, render full screen video cover exactly as requested
   if (!hasEntered) {
     return (
-      <div className="relative w-full h-screen min-h-[600px] bg-[#1a1a1a] text-white font-serif overflow-hidden select-none">
+      <div className="relative w-full min-h-screen md:min-h-[650px] bg-[#1a1a1a] text-white font-serif select-none flex flex-col justify-between p-6 md:p-12 z-0 overflow-hidden">
         {/* Background video playing looping ambiently */}
-        <div className="absolute inset-0 w-full h-full z-0 overflow-hidden">
+        <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden">
           <video 
+            key={videoUrl}
             autoPlay 
             loop 
             muted 
@@ -536,10 +580,10 @@ export default function App() {
         </div>
 
         {/* Header on top of cover */}
-        <div className="absolute top-0 inset-x-0 z-10 px-6 md:px-12 py-8 flex flex-row justify-between items-start">
+        <div className="w-full flex flex-row justify-between items-center z-10">
           {/* Logo on Left */}
           <div>
-            <h1 className="text-xl md:text-2xl font-light tracking-widest text-white/95 uppercase drop-shadow-sm font-serif">
+            <h1 className="text-lg md:text-2xl font-light tracking-widest text-white/95 uppercase drop-shadow-sm font-serif">
               MACOLORIS BLUE
             </h1>
             <p className="text-[9px] tracking-[0.35em] text-white/50 uppercase mt-1 font-mono">
@@ -547,8 +591,8 @@ export default function App() {
             </p>
           </div>
 
-          {/* Navigation Links on Right */}
-          <div className="flex items-center gap-x-4 md:gap-x-5 text-[9px] sm:text-[10px] font-sans text-white/70 tracking-[0.15em]">
+          {/* Navigation Links on Right (Desktop Only) */}
+          <div className="hidden md:flex items-center gap-x-4 md:gap-x-5 text-[9px] sm:text-[10px] font-sans text-white/70 tracking-[0.15em]">
             {visibleSections.works !== false && (
               <button 
                 onClick={() => { setHasEntered(true); navigateTo('WORKS'); }}
@@ -609,43 +653,157 @@ export default function App() {
               </button>
             )}
           </div>
+
+          {/* Navigation Toggle - Mobile Only */}
+          <div className="md:hidden flex items-center">
+            <button 
+              onClick={() => setCoverMobileMenuOpen(!coverMobileMenuOpen)}
+              className="text-white/90 font-semibold text-xs tracking-widest uppercase hover:text-[#4A6FA5] transition-colors select-none focus:outline-none cursor-pointer"
+            >
+              {coverMobileMenuOpen ? 'Close —' : 'Menu —'}
+            </button>
+          </div>
         </div>
 
-        {/* Bottom Left: Photographic index column from work entries (exactly like reference image) */}
-        {visibleSections.works !== false && (
-          <div className="absolute bottom-10 left-6 md:left-12 z-10 max-w-md hidden sm:flex flex-col gap-2 animate-fade-in">
-            <span className="font-mono text-[9px] tracking-[0.4em] text-white/45 uppercase block mb-1">
-              LATEST ENTRIES INDEX
-            </span>
-            <div className="flex flex-col gap-1.5 max-h-[220px] overflow-y-auto pr-3 font-mono text-[10.5px] text-white/50 scrollbar-none">
-              {works.slice(0, 10).map((w) => (
-                <button
-                  key={w.id}
-                  onClick={() => {
-                    setHasEntered(true);
-                    navigateTo('WORKS');
-                    setSelectedWorkId(w.id);
-                  }}
-                  className="text-left hover:text-white hover:translate-x-1 transition-all duration-300 truncate focus:outline-none"
+        {/* Middle part - spacer & Cover Mobile Menu Dropdown overlay */}
+        <div className="flex-1 flex items-center justify-center relative my-4">
+          {coverMobileMenuOpen && (
+            <div className="fixed inset-0 z-[100] bg-[#121212]/98 backdrop-blur-md flex flex-col justify-between p-6 sm:p-10 text-left animate-fade-in font-sans">
+              {/* Header inside full screen mobile menu */}
+              <div className="flex justify-between items-center w-full">
+                <div>
+                  <h1 className="text-lg font-light tracking-widest text-white/95 uppercase font-serif">
+                    MACOLORIS BLUE
+                  </h1>
+                  <p className="text-[8px] tracking-[0.35em] text-white/50 uppercase mt-1 font-mono">
+                    Nihon no Ao Record
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setCoverMobileMenuOpen(false)}
+                  className="text-white hover:text-red-400 font-mono text-[11px] tracking-widest uppercase cursor-pointer"
                 >
-                  {w.title}, {w.location}, {w.year}
+                  Close ×
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
+              </div>
 
-        {/* Bottom Right: Clean Entry Action */}
-        <div className="absolute bottom-10 right-6 md:right-12 z-10 flex flex-col items-end gap-2 text-right">
-          <button 
-            onClick={() => { setHasEntered(true); navigateTo(getFirstActiveTab()); }}
-            className="group flex items-center gap-2 border border-white/30 hover:border-white/60 bg-black/15 hover:bg-black/35 backdrop-blur-xs px-4 py-2 rounded-[2px] text-[10px] font-mono tracking-widest text-white transition-all cursor-pointer"
-          >
-            Enter Gallery
-          </button>
-          <span className="font-mono text-[8px] tracking-[0.2em] text-white/20 uppercase">
-            Nihon no Ao Record
-          </span>
+              {/* Menu Links with scrolling inside if too many custom tabs */}
+              <div className="flex-1 flex items-center justify-center my-6 overflow-y-auto max-h-[70vh] w-full">
+                <div className="flex flex-col gap-4 font-sans text-xs sm:text-sm tracking-[0.2em] uppercase font-light text-white/90 w-full max-w-xs mx-auto">
+                  {visibleSections.works !== false && (
+                    <button 
+                      onClick={() => { setCoverMobileMenuOpen(false); setHasEntered(true); navigateTo('WORKS'); }} 
+                      className="py-2.5 text-center border-b border-white/[0.05] hover:text-[#4A6FA5] transition-colors w-full cursor-pointer"
+                    >
+                      Works
+                    </button>
+                  )}
+                  {visibleSections.archive !== false && (
+                    <button 
+                      onClick={() => { setCoverMobileMenuOpen(false); setHasEntered(true); navigateTo('ARCHIVE'); }} 
+                      className="py-2.5 text-center border-b border-white/[0.05] hover:text-[#4A6FA5] transition-colors w-full cursor-pointer"
+                    >
+                      Archive
+                    </button>
+                  )}
+                  {visibleSections.emotions !== false && (
+                    <button 
+                      onClick={() => { setCoverMobileMenuOpen(false); setHasEntered(true); navigateTo('EMOTIONS'); }} 
+                      className="py-2.5 text-center border-b border-white/[0.05] italic flex items-center justify-center gap-1 hover:text-[#4A6FA5] transition-colors w-full cursor-pointer"
+                    >
+                      Emotions <span className="text-[6.5px] text-[#4A6FA5]">●</span>
+                    </button>
+                  )}
+                  {visibleSections.journal !== false && (
+                    <button 
+                      onClick={() => { setCoverMobileMenuOpen(false); setHasEntered(true); navigateTo('JOURNAL'); }} 
+                      className="py-2.5 text-center border-b border-white/[0.05] hover:text-[#4A6FA5] transition-colors w-full cursor-pointer"
+                    >
+                      Journal
+                    </button>
+                  )}
+                  {visibleSections.about !== false && (
+                    <button 
+                      onClick={() => { setCoverMobileMenuOpen(false); setHasEntered(true); navigateTo('ABOUT'); }} 
+                      className="py-2.5 text-center border-b border-white/[0.05] hover:text-[#4A6FA5] transition-colors w-full cursor-pointer"
+                    >
+                      About
+                    </button>
+                  )}
+
+                  {customTabs.filter(ct => ct.visible).map(ct => (
+                    <button 
+                      key={ct.id}
+                      onClick={() => { setCoverMobileMenuOpen(false); setHasEntered(true); navigateTo(ct.id); }} 
+                      className="py-2.5 text-center border-b border-[#ffffff]/0.05 hover:text-[#4A6FA5] transition-colors w-full cursor-pointer"
+                    >
+                      {ct.name}
+                    </button>
+                  ))}
+
+                  {isAdmin && (
+                    <button 
+                      onClick={() => { setCoverMobileMenuOpen(false); setHasEntered(true); navigateTo('ADMIN'); }} 
+                      className="py-2.5 text-center text-[#4A6FA5] font-semibold border-b border-white/[0.05] w-full cursor-pointer"
+                    >
+                      CONSOLE (ADMIN)
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Bottom footer */}
+              <div className="w-full text-center">
+                <span className="font-mono text-[8px] tracking-[0.2em] text-white/30 uppercase">
+                  Nihon no Ao Record
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Bottom portion - side-by-side on desktop, single column bottom on mobile */}
+        <div className="w-full flex flex-col sm:flex-row justify-between items-end gap-6 z-10">
+          
+          {/* Bottom Left: Photographic index column from work entries */}
+          {visibleSections.works !== false ? (
+            <div className="max-w-md hidden sm:flex flex-col gap-2 animate-fade-in text-left">
+              <span className="font-mono text-[9px] tracking-[0.4em] text-white/45 uppercase block mb-1">
+                LATEST ENTRIES INDEX
+              </span>
+              <div className="flex flex-col gap-1.5 max-h-[160px] overflow-y-auto pr-3 font-mono text-[10.5px] text-white/50 scrollbar-none">
+                {works.slice(0, 10).map((w) => (
+                  <button
+                    key={w.id}
+                    onClick={() => {
+                      setHasEntered(true);
+                      navigateTo('WORKS');
+                      setSelectedWorkId(w.id);
+                    }}
+                    className="text-left hover:text-white hover:translate-x-1 transition-all duration-300 truncate focus:outline-none cursor-pointer"
+                  >
+                    {w.title}, {w.location}, {w.year}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="hidden sm:block" />
+          )}
+
+          {/* Bottom Right: Clean Entry Action */}
+          <div className="w-full sm:w-auto flex flex-col sm:items-end gap-2 text-center sm:text-right">
+            <button 
+              onClick={() => { setHasEntered(true); navigateTo(getFirstActiveTab()); }}
+              className="group w-full sm:w-auto flex items-center justify-center gap-2 border border-white/30 hover:border-white/60 bg-black/35 hover:bg-black/55 backdrop-blur-xs px-5 py-2.5 rounded-[2px] text-[10.5px] font-mono tracking-widest text-white transition-all cursor-pointer"
+            >
+              Enter Gallery
+            </button>
+            <span className="font-mono text-[8.5px] tracking-[0.2em] text-white/20 uppercase">
+              Nihon no Ao Record
+            </span>
+          </div>
+
         </div>
       </div>
     );
@@ -1879,10 +2037,10 @@ export default function App() {
                       <label className="block font-mono text-[10px] text-[#222222]/70 uppercase mb-0.5">출생연도</label>
                       <input 
                         type="text" 
-                        value={about.birthYear}
+                        value={tempAbout?.birthYear ?? about.birthYear}
                         onChange={(e) => {
-                          const updated = { ...about, birthYear: e.target.value };
-                          saveAboutToStorage(updated);
+                          const updated = { ...(tempAbout || about), birthYear: e.target.value };
+                          setTempAbout(updated);
                         }}
                         className="w-full bg-white p-2 border border-[#222222]/15 rounded font-mono"
                       />
@@ -1891,10 +2049,10 @@ export default function App() {
                       <label className="block font-mono text-[10px] text-[#222222]/70 uppercase mb-0.5">출생지역</label>
                       <input 
                         type="text" 
-                        value={about.birthPlace}
+                        value={tempAbout?.birthPlace ?? about.birthPlace}
                         onChange={(e) => {
-                          const updated = { ...about, birthPlace: e.target.value };
-                          saveAboutToStorage(updated);
+                          const updated = { ...(tempAbout || about), birthPlace: e.target.value };
+                          setTempAbout(updated);
                         }}
                         className="w-full bg-white p-2 border border-[#222222]/15 rounded"
                       />
@@ -1903,10 +2061,10 @@ export default function App() {
                       <label className="block font-mono text-[10px] text-[#222222]/70 uppercase mb-0.5">직업 (본업)</label>
                       <input 
                         type="text" 
-                        value={about.profession}
+                        value={tempAbout?.profession ?? about.profession}
                         onChange={(e) => {
-                          const updated = { ...about, profession: e.target.value };
-                          saveAboutToStorage(updated);
+                          const updated = { ...(tempAbout || about), profession: e.target.value };
+                          setTempAbout(updated);
                         }}
                         className="w-full bg-white p-2 border border-[#222222]/15 rounded"
                       />
@@ -1915,10 +2073,10 @@ export default function App() {
                       <label className="block font-mono text-[10px] text-[#222222]/70 uppercase mb-0.5">에세이 자기소개 (Essays)</label>
                       <textarea 
                         rows={4}
-                        value={about.biography}
+                        value={tempAbout?.biography ?? about.biography}
                         onChange={(e) => {
-                          const updated = { ...about, biography: e.target.value };
-                          saveAboutToStorage(updated);
+                          const updated = { ...(tempAbout || about), biography: e.target.value };
+                          setTempAbout(updated);
                         }}
                         className="w-full bg-white p-2 border border-[#222222]/15 rounded font-serif-ja leading-relaxed"
                       />
@@ -1928,10 +2086,10 @@ export default function App() {
                       <label className="block font-mono text-[10px] text-[#222222]/70 uppercase">사용 장비 (Separated by comma)</label>
                       <input 
                         type="text" 
-                        value={about.equipments.join(', ')}
+                        value={(tempAbout?.equipments ?? about.equipments).join(', ')}
                         onChange={(e) => {
-                          const updated = { ...about, equipments: e.target.value.split(',').map(s=>s.trim()).filter(Boolean) };
-                          saveAboutToStorage(updated);
+                          const updated = { ...(tempAbout || about), equipments: e.target.value.split(',').map(s=>s.trim()).filter(Boolean) };
+                          setTempAbout(updated);
                         }}
                         className="w-full bg-white p-2 border border-[#222222]/15 rounded font-mono"
                       />
@@ -1949,10 +2107,10 @@ export default function App() {
                       <label className="block font-mono text-[10px] text-[#222222]/70 uppercase mb-0.5">Instagram ID</label>
                       <input 
                         type="text" 
-                        value={contact.instagram}
+                        value={tempContact?.instagram ?? contact.instagram}
                         onChange={(e) => {
-                          const updated = { ...contact, instagram: e.target.value };
-                          saveContactToStorage(updated);
+                          const updated = { ...(tempContact || contact), instagram: e.target.value };
+                          setTempContact(updated);
                         }}
                         className="w-full bg-white p-2 border border-[#222222]/15 rounded font-mono"
                       />
@@ -1961,10 +2119,10 @@ export default function App() {
                       <label className="block font-mono text-[10px] text-[#222222]/70 uppercase mb-0.5">Contact Email</label>
                       <input 
                         type="email" 
-                        value={contact.email}
+                        value={tempContact?.email ?? contact.email}
                         onChange={(e) => {
-                          const updated = { ...contact, email: e.target.value };
-                          saveContactToStorage(updated);
+                          const updated = { ...(tempContact || contact), email: e.target.value };
+                          setTempContact(updated);
                         }}
                         className="w-full bg-white p-2 border border-[#222222]/15 rounded font-mono"
                       />
@@ -1982,8 +2140,8 @@ export default function App() {
                       <label className="block font-mono text-[10px] text-[#222222]/70 uppercase mb-0.5">인트로 영상 MP4 URL (직접 링크)</label>
                       <input 
                         type="text" 
-                        value={videoUrl}
-                        onChange={(e) => saveVideoUrlToStorage(e.target.value)}
+                        value={tempVideoUrl !== '' ? tempVideoUrl : videoUrl}
+                        onChange={(e) => setTempVideoUrl(e.target.value)}
                         placeholder="동영상 직접 재생 주소 (MP4)"
                         className="w-full bg-white p-2 border border-[#222222]/15 rounded font-mono"
                       />
@@ -2003,7 +2161,7 @@ export default function App() {
                                 const reader = new FileReader();
                                 reader.onloadend = () => {
                                   if (typeof reader.result === 'string') {
-                                    saveVideoUrlToStorage(reader.result);
+                                    setTempVideoUrl(reader.result);
                                   }
                                 };
                                 reader.readAsDataURL(file as any);
@@ -2041,10 +2199,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.works !== false}
+                            checked={(tempVisibleSections ?? visibleSections).works !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, works: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), works: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2053,10 +2211,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.archive !== false}
+                            checked={(tempVisibleSections ?? visibleSections).archive !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, archive: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), archive: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2065,10 +2223,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.emotions !== false}
+                            checked={(tempVisibleSections ?? visibleSections).emotions !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, emotions: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), emotions: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2077,10 +2235,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.journal !== false}
+                            checked={(tempVisibleSections ?? visibleSections).journal !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, journal: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), journal: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2089,10 +2247,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none col-span-2">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.about !== false}
+                            checked={(tempVisibleSections ?? visibleSections).about !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, about: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), about: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2108,10 +2266,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.showBirthYear !== false}
+                            checked={(tempVisibleSections ?? visibleSections).showBirthYear !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, showBirthYear: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), showBirthYear: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2120,10 +2278,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.showBirthPlace !== false}
+                            checked={(tempVisibleSections ?? visibleSections).showBirthPlace !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, showBirthPlace: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), showBirthPlace: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2132,10 +2290,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.showOccupation !== false}
+                            checked={(tempVisibleSections ?? visibleSections).showOccupation !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, showOccupation: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), showOccupation: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2144,10 +2302,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.showGears !== false}
+                            checked={(tempVisibleSections ?? visibleSections).showGears !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, showGears: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), showGears: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2157,19 +2315,16 @@ export default function App() {
                     </div>
 
                     {/* Intro landing video & inquiry controls */}
-                    <div>
+                    <div className="border-b border-black/5 pb-3">
                       <span className="block font-mono text-[9.5px] text-[#4A6FA5] font-bold uppercase tracking-wider mb-2">랜딩화면 인트로 및 하단 연결 (Intro &amp; Contact Drawers)</span>
                       <div className="space-y-2">
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.introVideo !== false}
+                            checked={(tempVisibleSections ?? visibleSections).introVideo !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, introVideo: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
-                              if (!e.target.checked) {
-                                setHasEntered(true);
-                              }
+                              const updated = { ...(tempVisibleSections || visibleSections), introVideo: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2178,10 +2333,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.showContactForm !== false}
+                            checked={(tempVisibleSections ?? visibleSections).showContactForm !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, showContactForm: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), showContactForm: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2190,10 +2345,10 @@ export default function App() {
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input 
                             type="checkbox" 
-                            checked={visibleSections.footerContact !== false}
+                            checked={(tempVisibleSections ?? visibleSections).footerContact !== false}
                             onChange={(e) => {
-                              const updated = { ...visibleSections, footerContact: e.target.checked };
-                              saveVisibleSectionsToStorage(updated);
+                              const updated = { ...(tempVisibleSections || visibleSections), footerContact: e.target.checked };
+                              setTempVisibleSections(updated);
                             }}
                             className="rounded text-[#4A6FA5] focus:ring-[#4A6FA5]"
                           />
@@ -2202,6 +2357,27 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* EXPLICIT SAVE ACTION FOR PREFERENCES */}
+                    <div className="bg-[#4A6FA5]/5 border border-[#4A6FA5]/20 p-4 rounded mt-4">
+                      <span className="block font-mono text-[10px] text-[#4A6FA5] font-bold uppercase tracking-wider mb-2">💾 설정 사항 보존 제어기 (Preferences Controller)</span>
+                      <p className="text-[9.5px] text-stone-600 font-sans mb-3 font-semibold">
+                        위 인트로 비디오 파일/주소, 자기소개 글, SNS 계정 정보, 메뉴 체크 상자는 아래 저장을 눌러야 최종 브라우저(Local Storage)에 기록됩니다.
+                      </p>
+                      
+                      <button
+                        type="button"
+                        onClick={handleSaveAllSettings}
+                        className="w-full bg-[#4A6FA5] hover:bg-[#35537D] text-white py-2.5 px-4 rounded font-mono text-xs font-bold tracking-wider transition-colors shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        💾 변경 지사항 최종 적용 저장하기 (Save Settings)
+                      </button>
+
+                      {settingsSavedMessage && (
+                        <div className="mt-2 p-2 bg-emerald-50 border border-emerald-200 rounded text-[10.5px] text-emerald-800 font-semibold text-center animate-pulse">
+                          {settingsSavedMessage}
+                        </div>
+                      )}
+                    </div>
                     {/* 나만의 커스텀 탭 메뉴 제어 (Custom Tabs Manager) */}
                     <div className="border-t border-black/5 pt-3 mt-3">
                       <div className="flex justify-between items-center mb-2">
