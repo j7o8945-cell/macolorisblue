@@ -36,12 +36,104 @@ const PHOTO_PRESETS = [
   { url: 'https://images.unsplash.com/photo-1524413840003-05898d0c4765?w=1000&auto=format&fit=crop&q=80', label: '따뜻한 골목 어귀' }
 ];
 
+// --- IndexedDB for High-Performance Video Storage ---
+const DB_NAME = 'macoloris_media_db';
+const STORE_NAME = 'media_store';
+const VIDEO_KEY = 'landing_video_blob';
+
+const saveVideoToIndexedDB = (file: File): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    
+    request.onupgradeneeded = (e: any) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    
+    request.onsuccess = (e: any) => {
+      const db = e.target.result;
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const putReq = store.put(file, VIDEO_KEY);
+      
+      putReq.onsuccess = () => resolve();
+      putReq.onerror = () => reject(putReq.error);
+    };
+    
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const loadVideoFromIndexedDB = (): Promise<Blob | null> => {
+  return new Promise((resolve) => {
+    try {
+      const request = indexedDB.open(DB_NAME, 1);
+      
+      request.onupgradeneeded = (e: any) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME);
+        }
+      };
+      
+      request.onsuccess = (e: any) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          resolve(null);
+          return;
+        }
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const getReq = store.get(VIDEO_KEY);
+        
+        getReq.onsuccess = () => {
+          resolve(getReq.result || null);
+        };
+        getReq.onerror = () => resolve(null);
+      };
+      
+      request.onerror = () => resolve(null);
+    } catch (err) {
+      resolve(null);
+    }
+  });
+};
+
+const deleteVideoFromIndexedDB = (): Promise<void> => {
+  return new Promise((resolve) => {
+    try {
+      const request = indexedDB.open(DB_NAME, 1);
+      request.onsuccess = (e: any) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          resolve();
+          return;
+        }
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const delReq = store.delete(VIDEO_KEY);
+        delReq.onsuccess = () => resolve();
+        delReq.onerror = () => resolve();
+      };
+      request.onerror = () => resolve();
+    } catch (err) {
+      resolve();
+    }
+  });
+};
+
 export default function App() {
   // --- Persistent States ---
   const [works, setWorks] = useState<Work[]>([]);
   const [journals, setJournals] = useState<Journal[]>([]);
   const [about, setAbout] = useState<AboutInfo>(INITIAL_ABOUT);
   const [contact, setContact] = useState<ContactInfo>(INITIAL_CONTACT);
+  
+  // High performance local video state
+  const [tempVideoFile, setTempVideoFile] = useState<File | null>(null);
+  const videoRef = React.useRef<HTMLVideoElement>(null);
   
   // --- Custom Tab/Sections States ---
   const [customTabs, setCustomTabs] = useState<CustomTab[]>(() => {
@@ -252,7 +344,52 @@ export default function App() {
       setContact(INITIAL_CONTACT);
       localStorage.setItem('macoloris_contact', JSON.stringify(INITIAL_CONTACT));
     }
+
+    // Load high-performance video from IndexedDB on boot, or load from clean URL
+    const videoSource = localStorage.getItem('macoloris_video_source');
+    if (videoSource === 'indexeddb') {
+      loadVideoFromIndexedDB().then(blob => {
+        if (blob) {
+          const objUrl = URL.createObjectURL(blob);
+          setVideoUrl(objUrl);
+        } else {
+          // fallback
+          const savedUrl = localStorage.getItem('macoloris_video_url') || 'video.mp4';
+          setVideoUrl(savedUrl);
+        }
+      });
+    } else {
+      const savedUrl = localStorage.getItem('macoloris_video_url') || 'video.mp4';
+      if (savedUrl && !savedUrl.startsWith('data:') && !savedUrl.startsWith('blob:')) {
+        setVideoUrl(savedUrl);
+      } else {
+        // Clear any old, lag-inducing Base64 video strings to instantly restore premium performance
+        setVideoUrl('video.mp4');
+        localStorage.setItem('macoloris_video_url', 'video.mp4');
+      }
+    }
   }, []);
+
+  // Programmatically trigger video load & play to bypass aggressive mobile browser restrictions
+  useEffect(() => {
+    if (videoRef.current) {
+      try {
+        videoRef.current.load();
+        const playPromise = videoRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(error => {
+            console.log("Autoplay was prevented by mobile browser. Retrying muted play:", error);
+            if (videoRef.current) {
+              videoRef.current.muted = true;
+              videoRef.current.play().catch(e => console.log("Final muted play failed:", e));
+            }
+          });
+        }
+      } catch (err) {
+        console.error("Video play control error:", err);
+      }
+    }
+  }, [videoUrl, hasEntered]);
 
   // --- Admin settings sync workspace ---
   useEffect(() => {
@@ -265,7 +402,7 @@ export default function App() {
     }
   }, [activeTab, isAdmin]);
 
-  const handleSaveAllSettings = () => {
+  const handleSaveAllSettings = async () => {
     if (tempAbout && tempContact && tempVisibleSections) {
       // 1. Save About
       setAbout({ ...tempAbout });
@@ -276,8 +413,30 @@ export default function App() {
       localStorage.setItem('macoloris_contact', JSON.stringify(tempContact));
       
       // 3. Save Video Url
-      setVideoUrl(tempVideoUrl);
-      localStorage.setItem('macoloris_video_url', tempVideoUrl);
+      if (tempVideoFile) {
+        try {
+          await saveVideoToIndexedDB(tempVideoFile);
+          localStorage.setItem('macoloris_video_source', 'indexeddb');
+          localStorage.setItem('macoloris_video_url', tempVideoUrl);
+          setVideoUrl(tempVideoUrl);
+          setTempVideoFile(null);
+        } catch (err) {
+          console.error("IndexedDB video save error:", err);
+          alert("동영상 파일을 웹 데이터베이스에 저장하는 도중 오류가 발생했습니다. 브라우저 여유 공간을 확인해주십시오.");
+        }
+      } else if (!tempVideoUrl.startsWith('blob:') && !tempVideoUrl.startsWith('data:')) {
+        localStorage.setItem('macoloris_video_source', 'url');
+        localStorage.setItem('macoloris_video_url', tempVideoUrl);
+        setVideoUrl(tempVideoUrl);
+        await deleteVideoFromIndexedDB();
+      } else {
+        // Keeping current settings, if base64 exists by accident inside state, clean it
+        if (tempVideoUrl.startsWith('data:')) {
+          setVideoUrl('video.mp4');
+          localStorage.setItem('macoloris_video_url', 'video.mp4');
+          localStorage.setItem('macoloris_video_source', 'url');
+        }
+      }
       
       // 4. Save Visible Sections
       setVisibleSections({ ...tempVisibleSections });
@@ -562,18 +721,21 @@ export default function App() {
   // If before first entrance, render full screen video cover exactly as requested
   if (!hasEntered) {
     return (
-      <div className="relative w-full min-h-screen md:min-h-[650px] bg-[#1a1a1a] text-white font-serif select-none flex flex-col justify-between p-6 md:p-12 z-0 overflow-hidden">
+      <div className="relative w-full h-screen min-h-[600px] md:min-h-[650px] bg-[#1a1a1a] text-white font-serif select-none flex flex-col justify-between p-6 md:p-12 z-0 overflow-hidden">
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden">
           <video 
+            ref={videoRef}
             key={videoUrl}
             autoPlay 
             loop 
             muted 
             playsInline 
-            src={videoUrl} 
             className="w-full h-full object-cover opacity-80"
-          ></video>
+          >
+            <source src={videoUrl} type="video/mp4" />
+            <source src={videoUrl} type="video/quicktime" />
+          </video>
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65"></div>
           <div className="absolute inset-0 bg-black/30"></div>
@@ -2155,16 +2317,12 @@ export default function App() {
                             onChange={(e) => {
                               const file = e.target.files?.[0];
                               if (file) {
-                                if (file.size > 10 * 1024 * 1024) {
-                                  alert("경고: 업로드하신 동영상 크기가 10MB를 넘습니다. 브라우저의 로컬 주소 로딩에 무리가 갈 수 있으므로 5MB 이하의 압축된 비디오 파일을 강력히 권장합니다.");
+                                if (file.size > 20 * 1024 * 1024) {
+                                  alert("경고: 업로드하신 동영상 크기가 20MB를 넘습니다. 브라우저 로컬 데이터베이스 및 로딩의 최적화 보장을 위해 10MB 이하의 용량으로 압축된 비디오 파일을 절대적으로 권장합니다.");
                                 }
-                                const reader = new FileReader();
-                                reader.onloadend = () => {
-                                  if (typeof reader.result === 'string') {
-                                    setTempVideoUrl(reader.result);
-                                  }
-                                };
-                                reader.readAsDataURL(file as any);
+                                const localUrl = URL.createObjectURL(file);
+                                setTempVideoFile(file);
+                                setTempVideoUrl(localUrl);
                               }
                             }}
                             className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
