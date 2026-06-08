@@ -177,6 +177,7 @@ export default function App() {
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   const [activePhotoIndex, setActivePhotoIndex] = useState<number>(0);
   const [showDetailInfo, setShowDetailInfo] = useState<boolean>(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   
   // --- Admin States ---
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
@@ -657,7 +658,7 @@ export default function App() {
       {/* Top sticky/fixed minimalist header */}
       {!selectedWorkId && (
         <header className="w-full sticky top-0 z-40 bg-[#F7F6F2]/95 backdrop-blur-md border-b border-gray-200/80">
-          <div className="max-w-7xl mx-auto px-6 md:px-12 py-5 flex flex-col sm:flex-row justify-between items-center gap-4">
+          <div className="max-w-7xl mx-auto px-6 md:px-12 py-4 md:py-5 flex flex-row justify-between items-center gap-4">
           
           {/* Logo on Left - sets hasEntered back to false to show the majestic home intro screen if enabled */}
           <div>
@@ -687,8 +688,8 @@ export default function App() {
             </button>
           </div>
 
-          {/* Navigation Menu on Right */}
-          <div className="flex items-center gap-x-4 sm:gap-x-5 gap-y-1.5 flex-wrap text-[9px] sm:text-[10px] font-sans tracking-[0.16em] justify-center sm:justify-end font-normal">
+          {/* Navigation Menu on Right (Desktop Only) */}
+          <div className="hidden md:flex items-center gap-x-4 sm:gap-x-5 gap-y-1.5 flex-wrap text-[9px] sm:text-[10px] font-sans tracking-[0.16em] justify-center sm:justify-end font-normal">
             {visibleSections.works !== false && (
               <button 
                 onClick={() => navigateTo('WORKS')} 
@@ -759,7 +760,92 @@ export default function App() {
             )}
           </div>
 
+          {/* Navigation Toggle - Mobile Only */}
+          <div className="md:hidden flex items-center">
+            <button 
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="text-[#222222] font-semibold text-xs tracking-widest uppercase hover:text-[#4A6FA5] transition-colors select-none focus:outline-none cursor-pointer"
+            >
+              {mobileMenuOpen ? 'Close —' : 'Menu —'}
+            </button>
+          </div>
+
         </div>
+
+        {/* Mobile Navigation Dropdown Menu Sheet */}
+        {mobileMenuOpen && (
+          <div className="md:hidden bg-[#F7F6F2] border-t border-gray-200/50 animate-fade-in w-full shadow-xs">
+            <div className="px-6 py-5 flex flex-col gap-4 font-sans text-[11px] sm:text-xs tracking-[0.16em] uppercase text-left font-normal border-b border-gray-200">
+              {visibleSections.works !== false && (
+                <button 
+                  onClick={() => { navigateTo('WORKS'); setMobileMenuOpen(false); }} 
+                  className={`py-1 text-left ${activeTab === 'WORKS' && !selectedWorkId ? 'text-[#4A6FA5] font-bold' : 'text-[#222222]/70'}`}
+                >
+                  Works
+                </button>
+              )}
+              {visibleSections.archive !== false && (
+                <button 
+                  onClick={() => { navigateTo('ARCHIVE'); setMobileMenuOpen(false); }} 
+                  className={`py-1 text-left ${activeTab === 'ARCHIVE' ? 'text-[#4A6FA5] font-bold' : 'text-[#222222]/70'}`}
+                >
+                  Archive
+                </button>
+              )}
+              {visibleSections.emotions !== false && (
+                <button 
+                  onClick={() => { navigateTo('EMOTIONS'); setMobileMenuOpen(false); }} 
+                  className={`py-1 text-left italic flex items-center gap-1 ${activeTab === 'EMOTIONS' ? 'text-[#4A6FA5] font-bold' : 'text-[#222222]/70'}`}
+                >
+                  Emotions <span className="text-[6.5px] text-[#4A6FA5]">●</span>
+                </button>
+              )}
+              {visibleSections.journal !== false && (
+                <button 
+                  onClick={() => { navigateTo('JOURNAL'); setMobileMenuOpen(false); }} 
+                  className={`py-1 text-left ${activeTab === 'JOURNAL' ? 'text-[#4A6FA5] font-bold' : 'text-[#222222]/70'}`}
+                >
+                  Journal
+                </button>
+              )}
+              {visibleSections.about !== false && (
+                <button 
+                  onClick={() => { navigateTo('ABOUT'); setMobileMenuOpen(false); }} 
+                  className={`py-1 text-left ${activeTab === 'ABOUT' ? 'text-[#4A6FA5] font-bold' : 'text-[#222222]/70'}`}
+                >
+                  About
+                </button>
+              )}
+
+              {customTabs.filter(ct => ct.visible).map(ct => (
+                <button 
+                  key={ct.id}
+                  onClick={() => { navigateTo(ct.id); setMobileMenuOpen(false); }} 
+                  className={`py-1 text-left ${activeTab === ct.id ? 'text-[#4A6FA5] font-bold' : 'text-[#222222]/70'}`}
+                >
+                  {ct.name}
+                </button>
+              ))}
+              
+              {isAdmin && (
+                <div className="flex flex-col gap-3 border-t border-gray-200/60 pt-4 mt-2">
+                  <button 
+                    onClick={() => { navigateTo('ADMIN'); setMobileMenuOpen(false); }} 
+                    className="text-[#4A6FA5] font-bold hover:underline py-1 text-left text-[11px]"
+                  >
+                    CONSOLE (ADMIN)
+                  </button>
+                  <button 
+                    onClick={() => { handleAdminLogout(); setMobileMenuOpen(false); }} 
+                    className="text-stone-400 font-bold hover:text-red-500 py-1 text-left text-[11px]"
+                  >
+                    LOGOUT
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </header>
       )}
 
@@ -801,32 +887,47 @@ export default function App() {
         {/* TAB 2: WORKS LIST (Grid Style like Hideaki Hamada)       */}
         {/* ========================================================= */}
         {activeTab === 'WORKS' && !selectedWorkId && (
-          <div className="fade-in px-6 md:px-12 py-10 md:py-14 w-full max-w-[100rem] mx-auto">
-            {/* State Portals Section: Separate list horizontally at the top, small and clean */}
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[10px] font-mono tracking-widest text-[#222222]/50 uppercase select-none pb-4 mb-8 border-b border-black/[0.03]">
-              <span className="text-[#222222]/30 font-semibold font-sans tracking-widest text-[9.5px]">State Portals:</span>
-              <button 
-                onClick={() => setSelectedEmotion(null)}
-                className={`hover:text-[#4A6FA5] transition-colors cursor-pointer flex items-center gap-1 ${!selectedEmotion ? 'text-[#4A6FA5] font-semibold' : 'text-[#222222]/60'}`}
-              >
-                <span>&mdash;</span> All ({works.length})
-              </button>
-              {['그리움', '외로움', '청춘', '여름'].map((emo) => {
-                const count = works.filter(w => w.emotion === emo).length;
-                return (
-                  <button 
-                    key={emo}
-                    onClick={() => setSelectedEmotion(emo)}
-                    className={`hover:text-[#4A6FA5] transition-colors cursor-pointer flex items-center gap-1 ${selectedEmotion === emo ? 'text-[#4A6FA5] font-semibold' : 'text-[#222222]/60'}`}
-                  >
-                    <span>&middot;</span> {emo} ({count})
-                  </button>
-                );
-              })}
+          <div className="fade-in px-6 md:px-12 py-8 md:py-14 w-full max-w-[100rem] mx-auto">
+            {/* Minimalist Section Header like Hideaki Hamada */}
+            <div className="flex justify-between items-baseline mb-6 md:mb-8 border-b border-black/[0.05] pb-4">
+              <h2 className="text-lg md:text-xl font-serif font-light tracking-widest text-[#222222] uppercase">
+                WORKS (2012-2026)
+              </h2>
+              <div className="font-mono text-[9.5px] sm:text-[10px] tracking-widest text-stone-400 select-none">
+                <span className="text-[#4A6FA5] font-semibold">Grid</span> &mdash; List
+              </div>
             </div>
 
-            {/* Main Photography Contact sheets grid - high density columns matching 2nd image */}
-            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12 gap-[3px] md:gap-[4px]">
+            {/* State Portals Section: Beautifully formatted as double columns on mobile, side-by-side on desktop */}
+            <div className="mb-8 select-none">
+              <span className="block font-mono text-[9px] sm:text-[10px] tracking-widest text-[#222222]/40 uppercase mb-3.5 font-bold">State Portals:</span>
+              <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-x-6 gap-y-3 text-[11.5px] sm:text-[10.5px] font-mono tracking-wider text-[#222222]">
+                <button 
+                  onClick={() => setSelectedEmotion(null)}
+                  className={`hover:text-[#4A6FA5] transition-colors cursor-pointer flex items-center gap-1.5 text-left ${!selectedEmotion ? 'text-[#4A6FA5] font-bold' : 'text-[#222222]/60'}`}
+                >
+                  <span className="text-[12px] font-sans h-3 flex items-center font-bold">{!selectedEmotion ? '—' : '·'}</span>
+                  <span>All ({works.length})</span>
+                </button>
+                {['그리움', '외로움', '청춘', '여름'].map((emo) => {
+                  const count = works.filter(w => w.emotion === emo).length;
+                  const isActive = selectedEmotion === emo;
+                  return (
+                    <button 
+                      key={emo}
+                      onClick={() => setSelectedEmotion(emo)}
+                      className={`hover:text-[#4A6FA5] transition-colors cursor-pointer flex items-center gap-1.5 text-left ${isActive ? 'text-[#4A6FA5] font-bold' : 'text-[#222222]/60'}`}
+                    >
+                      <span className="text-[12px] font-sans h-3 flex items-center font-bold">{isActive ? '—' : '·'}</span>
+                      <span>{emo} ({count})</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Main Photography Contact sheets grid - fully optimized mobile grid cols 2 to large sizes */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 2xl:grid-cols-12 gap-1.5 md:gap-[4px]">
               {(() => {
                 const displayedWorks = selectedEmotion 
                   ? works.filter(w => w.emotion === selectedEmotion)
@@ -842,8 +943,8 @@ export default function App() {
                       onClick={() => handleWorkClick(work.id)}
                       className="group cursor-pointer flex flex-col transition-all duration-300 transform hover:-translate-y-0.5 animate-fadeIn"
                     >
-                      {/* Photo wrapper: ultra-clean high density landscape */}
-                      <div className={`aspect-[3/2] ${cardBg} mb-1 relative overflow-hidden rounded-[1px] border border-black/[0.01] shadow-3xs transition-all duration-500`}>
+                      {/* Photo wrapper: vertical elegant portraits on mobile, standards on desktop */}
+                      <div className={`aspect-[3/4] sm:aspect-[3/2] ${cardBg} mb-1 relative overflow-hidden rounded-[1.5px] border border-black/[0.015] shadow-3xs transition-all duration-500`}>
                         <img 
                           src={work.images[0] || PHOTO_PRESETS[0].url} 
                           alt={work.title} 
@@ -851,12 +952,10 @@ export default function App() {
                           referrerPolicy="no-referrer"
                         />
                         <div className="absolute inset-0 bg-[#4A6FA5]/3 opacity-100 group-hover:opacity-0 transition-opacity duration-300"></div>
-                        <div className="absolute bottom-1 left-1 text-white text-[6.5px] tracking-widest opacity-0 group-hover:opacity-100 transition-opacity font-mono bg-[#4A6FA5]/90 px-1 py-0.5 backdrop-blur-3xs rounded-[1px]">
-                          OPEN
+                        <div className="absolute bottom-1.5 left-1.5 text-white text-[7px] tracking-widest opacity-0 group-hover:opacity-100 transition-opacity font-mono bg-[#4A6FA5]/95 px-1.5 py-0.5 backdrop-blur-3xs rounded-[1px]">
+                          VIEW
                         </div>
                       </div>
-                      
-
                     </div>
                   );
                 });
