@@ -143,7 +143,7 @@ export default function App() {
     return false;
   });
   const [videoUrl, setVideoUrl] = useState<string>(() => {
-    return localStorage.getItem('macoloris_video_url') || 'https://assets.mixkit.co/videos/preview/mixkit-wind-blowing-the-leaves-of-a-tree-41838-large.mp4';
+    return localStorage.getItem('macoloris_video_url') || 'video.mp4';
   });
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
     const saved = localStorage.getItem('macoloris_visible_sections');
@@ -522,15 +522,14 @@ export default function App() {
       <div className="relative w-full h-screen min-h-[600px] bg-[#1a1a1a] text-white font-serif overflow-hidden select-none">
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-0 overflow-hidden">
-          <video
-            key={videoUrl}
-            src={videoUrl}
-            autoPlay
-            loop
-            muted
-            playsInline
+          <video 
+            autoPlay 
+            loop 
+            muted 
+            playsInline 
+            src={videoUrl} 
             className="w-full h-full object-cover opacity-80"
-          />
+          ></video>
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65"></div>
           <div className="absolute inset-0 bg-black/30"></div>
