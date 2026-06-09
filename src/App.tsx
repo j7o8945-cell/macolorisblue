@@ -797,36 +797,54 @@ export default function App() {
 
   // Programmatically trigger video load & play to bypass aggressive mobile browser restrictions
   useEffect(() => {
-    if (isVideoReady && videoRef.current) {
-      const video = videoRef.current;
-      video.muted = true;
-      video.defaultMuted = true;
-      video.playsInline = true;
-      video.setAttribute('muted', '');
-      video.setAttribute('playsinline', '');
-      
-      const playVideo = () => {
-        const playPromise = video.play();
-        if (playPromise !== undefined) {
-          playPromise.then(() => {
-            setIsVideoPlaying(true);
-          }).catch(error => {
-            console.log("Autoplay was prevented by mobile browser. Retrying muted play on action:", error);
-            const startPlay = () => {
-              video.play().then(() => {
-                setIsVideoPlaying(true);
-              }).catch(e => console.log("Play failed after interaction:", e));
-              document.removeEventListener('touchstart', startPlay);
-              document.removeEventListener('click', startPlay);
-            };
-            document.addEventListener('touchstart', startPlay, { passive: true });
-            document.addEventListener('click', startPlay, { passive: true });
-          });
-        }
-      };
+    const video = videoRef.current;
+    if (!video) return;
 
-      playVideo();
-    }
+    video.muted = true;
+    video.defaultMuted = true;
+    video.playsInline = true;
+    video.setAttribute('muted', '');
+    video.setAttribute('playsinline', '');
+
+    const playVideo = () => {
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        playPromise.then(() => {
+          setIsVideoPlaying(true);
+        }).catch(error => {
+          console.log("Autoplay was prevented by mobile browser. Retrying muted play on action:", error);
+        });
+      }
+    };
+
+    // Try playing immediately
+    playVideo();
+
+    // Attach interaction fallbacks on first user touch/click/scroll in the document
+    const startPlayOnInteraction = () => {
+      if (videoRef.current) {
+        videoRef.current.play().then(() => {
+          setIsVideoPlaying(true);
+        }).catch(e => console.log("Play failed after interaction:", e));
+      }
+      cleanupListeners();
+    };
+
+    const cleanupListeners = () => {
+      document.removeEventListener('touchstart', startPlayOnInteraction);
+      document.removeEventListener('click', startPlayOnInteraction);
+      document.removeEventListener('touchend', startPlayOnInteraction);
+      document.removeEventListener('scroll', startPlayOnInteraction);
+    };
+
+    document.addEventListener('touchstart', startPlayOnInteraction, { passive: true });
+    document.addEventListener('click', startPlayOnInteraction, { passive: true });
+    document.addEventListener('touchend', startPlayOnInteraction, { passive: true });
+    document.addEventListener('scroll', startPlayOnInteraction, { passive: true });
+
+    return () => {
+      cleanupListeners();
+    };
   }, [videoUrl, isVideoReady, hasEntered]);
 
   // --- Periodic polling to synchronise changes across all devices in real-time ---
@@ -1389,30 +1407,13 @@ export default function App() {
   if (!hasEntered) {
     return (
       <div 
-        className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden"
+        className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] bg-cover bg-center bg-no-repeat text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden"
+        style={{ backgroundImage: `url(${homeHeroImg})` }}
       >
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-[#121212]">
-          {/* Robust placeholder poster that ALWAYS fits any mobile & desktop screen perfectly using object-cover */}
-          <img 
-            src={homeHeroImg} 
-            alt="Intro Background"
-            className="absolute inset-0 w-full h-full object-cover opacity-80 z-0"
-          />
-          
           <video 
-            ref={(el) => {
-              (videoRef as any).current = el;
-              if (el) {
-                el.setAttribute('muted', 'true');
-                el.setAttribute('playsinline', 'true');
-                el.muted = true;
-                el.playsInline = true;
-                el.play().then(() => {
-                  setIsVideoPlaying(true);
-                }).catch(() => {});
-              }
-            }}
+            ref={videoRef}
             key={videoUrl}
             src={getPlayableVideoUrl(videoUrl)}
             autoPlay 
@@ -1422,11 +1423,11 @@ export default function App() {
             onPlay={() => setIsVideoPlaying(true)}
             onPlaying={() => setIsVideoPlaying(true)}
             className="absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 z-10"
-            style={{ opacity: isVideoPlaying ? 0.8 : 0 }}
+            style={{ opacity: isVideoPlaying ? 1 : 0 }}
           />
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65 z-20"></div>
-          <div className="absolute inset-0 bg-black/30 z-20"></div>
+          <div className="absolute inset-0 bg-black/40 z-20"></div>
         </div>
 
         {/* Header on top of cover */}
