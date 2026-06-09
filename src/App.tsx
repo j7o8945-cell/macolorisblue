@@ -289,6 +289,7 @@ export default function App() {
   // High performance local video state
   const [tempVideoFile, setTempVideoFile] = useState<File | null>(null);
   const [isVideoReady, setIsVideoReady] = useState<boolean>(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
   const videoRef = React.useRef<HTMLVideoElement>(null);
   
   // --- Custom Tab/Sections States ---
@@ -807,10 +808,14 @@ export default function App() {
       const playVideo = () => {
         const playPromise = video.play();
         if (playPromise !== undefined) {
-          playPromise.catch(error => {
+          playPromise.then(() => {
+            setIsVideoPlaying(true);
+          }).catch(error => {
             console.log("Autoplay was prevented by mobile browser. Retrying muted play on action:", error);
             const startPlay = () => {
-              video.play().catch(e => console.log("Play failed after interaction:", e));
+              video.play().then(() => {
+                setIsVideoPlaying(true);
+              }).catch(e => console.log("Play failed after interaction:", e));
               document.removeEventListener('touchstart', startPlay);
               document.removeEventListener('click', startPlay);
             };
@@ -823,6 +828,68 @@ export default function App() {
       playVideo();
     }
   }, [videoUrl, isVideoReady, hasEntered]);
+
+  // --- Periodic polling to synchronise changes across all devices in real-time ---
+  useEffect(() => {
+    let active = true;
+    const pollInterval = setInterval(async () => {
+      // Skip if active editing is underway to avoid interrupting the admin's workflow
+      if (editingWork !== null || editingJournal !== null) {
+        return;
+      }
+      
+      try {
+        const res = await fetch("/api/portfolio");
+        if (res.ok && active) {
+          const parsed = await res.json();
+          if (parsed && parsed.status !== "none") {
+            // Compare and update states ONLY if different to minimize React re-renders & state flicker
+            if (parsed.works && JSON.stringify(parsed.works) !== JSON.stringify(works)) {
+              setWorks(parsed.works);
+              localStorage.setItem('macoloris_works', JSON.stringify(parsed.works));
+            }
+            if (parsed.journals && JSON.stringify(parsed.journals) !== JSON.stringify(journals)) {
+              setJournals(parsed.journals);
+              localStorage.setItem('macoloris_journals', JSON.stringify(parsed.journals));
+            }
+            if (parsed.about && JSON.stringify(parsed.about) !== JSON.stringify(about)) {
+              setAbout(parsed.about);
+              localStorage.setItem('macoloris_about', JSON.stringify(parsed.about));
+            }
+            if (parsed.contact && JSON.stringify(parsed.contact) !== JSON.stringify(contact)) {
+              setContact(parsed.contact);
+              localStorage.setItem('macoloris_contact', JSON.stringify(parsed.contact));
+            }
+            if (parsed.emotions && JSON.stringify(parsed.emotions) !== JSON.stringify(emotions)) {
+              setEmotions(parsed.emotions);
+              localStorage.setItem('macoloris_emotions', JSON.stringify(parsed.emotions));
+            }
+            if (parsed.customTabs && JSON.stringify(parsed.customTabs) !== JSON.stringify(customTabs)) {
+              setCustomTabs(parsed.customTabs);
+              localStorage.setItem('macoloris_custom_tabs', JSON.stringify(parsed.customTabs));
+            }
+            if (parsed.visibleSections && JSON.stringify(parsed.visibleSections) !== JSON.stringify(visibleSections)) {
+              setVisibleSections(parsed.visibleSections);
+              localStorage.setItem('macoloris_visible_sections', JSON.stringify(parsed.visibleSections));
+            }
+            if (parsed.videoUrl && parsed.videoUrl !== 'indexeddb_data' && parsed.videoUrl !== videoUrl) {
+              setIsVideoPlaying(false); // Reset playback state so new video begins intro transition
+              setVideoUrl(parsed.videoUrl);
+              localStorage.setItem('macoloris_video_url', parsed.videoUrl);
+              localStorage.setItem('macoloris_video_source', 'url');
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Polling portfolio update failed:", err);
+      }
+    }, 5000); // 5 seconds polling rate for excellent cross-device synchronization
+
+    return () => {
+      active = false;
+      clearInterval(pollInterval);
+    };
+  }, [works, journals, about, contact, emotions, customTabs, visibleSections, videoUrl, editingWork, editingJournal]);
 
   // --- Admin settings sync workspace ---
   useEffect(() => {
@@ -1325,7 +1392,14 @@ export default function App() {
         className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden"
       >
         {/* Background video playing looping ambiently */}
-        <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden">
+        <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-[#121212]">
+          {/* Robust placeholder poster that ALWAYS fits any mobile & desktop screen perfectly using object-cover */}
+          <img 
+            src={homeHeroImg} 
+            alt="Intro Background"
+            className="absolute inset-0 w-full h-full object-cover opacity-80 z-0"
+          />
+          
           <video 
             ref={(el) => {
               (videoRef as any).current = el;
@@ -1334,21 +1408,25 @@ export default function App() {
                 el.setAttribute('playsinline', 'true');
                 el.muted = true;
                 el.playsInline = true;
-                el.play().catch(() => {});
+                el.play().then(() => {
+                  setIsVideoPlaying(true);
+                }).catch(() => {});
               }
             }}
             key={videoUrl}
             src={getPlayableVideoUrl(videoUrl)}
-            poster={homeHeroImg}
             autoPlay 
             loop 
             muted 
             playsInline 
-            className="w-full h-full object-cover opacity-80"
+            onPlay={() => setIsVideoPlaying(true)}
+            onPlaying={() => setIsVideoPlaying(true)}
+            className="absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 z-10"
+            style={{ opacity: isVideoPlaying ? 0.8 : 0 }}
           />
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
-          <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65"></div>
-          <div className="absolute inset-0 bg-black/30"></div>
+          <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65 z-20"></div>
+          <div className="absolute inset-0 bg-black/30 z-20"></div>
         </div>
 
         {/* Header on top of cover */}
