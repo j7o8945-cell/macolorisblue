@@ -73,41 +73,70 @@ async function startServer() {
     }
   });
 
-  // API: Serve uploaded video from server disk statically, supporting range (Streaming) requests for iOS/Android Safari
-  app.get("/api/video/intro.mp4", (req, res) => {
-    const filePath = path.join(process.cwd(), 'src', 'data', 'uploads', 'intro.mp4');
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).send("Not found");
-    }
-
-    const stat = fs.statSync(filePath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-
-    if (range) {
-      const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
-      const chunksize = (end - start) + 1;
-      const file = fs.createReadStream(filePath, { start, end });
-      const head = {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': 'video/mp4',
-      };
-
-      res.writeHead(206, head);
-      file.pipe(res);
+  // API: Serve ALL video files (*.mp4, *.mov, *.webm, including intro.mp4 and defaults) with robust HTTP Range (Streaming) support for Safari/Mobile devices
+  app.get(/\.(mp4|mov|webm)$/i, (req, res, next) => {
+    // Decode URI path in case of any URL encoding
+    const decodedPath = decodeURIComponent(req.path);
+    
+    // Check if it is the special upload route, redirect path respectively
+    let filePath = '';
+    if (decodedPath === '/api/video/intro.mp4') {
+      filePath = path.join(process.cwd(), 'src', 'data', 'uploads', 'intro.mp4');
     } else {
-      const head = {
-        'Content-Length': fileSize,
-        'Content-Type': 'video/mp4',
-      };
-      res.writeHead(200, head);
-      fs.createReadStream(filePath).pipe(res);
+      filePath = path.join(process.cwd(), decodedPath);
+      if (!fs.existsSync(filePath)) {
+        // In production, try looking inside the dist folder
+        filePath = path.join(process.cwd(), 'dist', decodedPath);
+      }
     }
+
+    if (fs.existsSync(filePath)) {
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.isFile()) {
+          const fileSize = stat.size;
+          const range = req.headers.range;
+          const contentType = decodedPath.endsWith('.webm') ? 'video/webm' :
+                              (decodedPath.endsWith('.mov') || decodedPath.endsWith('.qt')) ? 'video/quicktime' :
+                              'video/mp4';
+
+          if (range) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+            if (start >= fileSize || end >= fileSize) {
+              res.status(416).set('Content-Range', `bytes */${fileSize}`).set('Accept-Ranges', 'bytes').send();
+              return;
+            }
+
+            const chunksize = (end - start) + 1;
+            const file = fs.createReadStream(filePath, { start, end });
+            const head = {
+              'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+              'Accept-Ranges': 'bytes',
+              'Content-Length': chunksize,
+              'Content-Type': contentType,
+            };
+
+            res.writeHead(206, head);
+            file.pipe(res);
+          } else {
+            const head = {
+              'Content-Length': fileSize,
+              'Content-Type': contentType,
+              'Accept-Ranges': 'bytes',
+            };
+            res.writeHead(200, head);
+            fs.createReadStream(filePath).pipe(res);
+          }
+          return;
+        }
+      } catch (err) {
+        console.error("Video range stream failed:", err);
+      }
+    }
+    next();
   });
 
   // Hot Module Replacement (HMR) and development asset pipeline vs. Production Static pipeline
