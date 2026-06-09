@@ -45,6 +45,71 @@ async function startServer() {
     }
   });
 
+  // API: Upload intro video as base64 to server disk
+  app.post("/api/video/upload", (req, res) => {
+    try {
+      const { base64 } = req.body;
+      if (!base64) {
+        return res.status(400).json({ error: "No video body provided" });
+      }
+
+      // Convert base64 stream to raw binary
+      const base64Data = base64.replace(/^data:video\/[^;]+;base64,/, "");
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      const uploadDir = path.join(process.cwd(), 'src', 'data', 'uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+
+      const filePath = path.join(uploadDir, 'intro.mp4');
+      fs.writeFileSync(filePath, buffer);
+
+      console.log("Intro video successfully written to server disk:", filePath);
+      return res.json({ status: "success", url: "/api/video/intro.mp4" });
+    } catch (e: any) {
+      console.error("Failed to write video file server-side:", e);
+      return res.status(500).json({ error: e.message || "Internal Server Error" });
+    }
+  });
+
+  // API: Serve uploaded video from server disk statically, supporting range (Streaming) requests for iOS/Android Safari
+  app.get("/api/video/intro.mp4", (req, res) => {
+    const filePath = path.join(process.cwd(), 'src', 'data', 'uploads', 'intro.mp4');
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send("Not found");
+    }
+
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+      const chunksize = (end - start) + 1;
+      const file = fs.createReadStream(filePath, { start, end });
+      const head = {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': 'video/mp4',
+      };
+
+      res.writeHead(206, head);
+      file.pipe(res);
+    } else {
+      const head = {
+        'Content-Length': fileSize,
+        'Content-Type': 'video/mp4',
+      };
+      res.writeHead(200, head);
+      fs.createReadStream(filePath).pipe(res);
+    }
+  });
+
   // Hot Module Replacement (HMR) and development asset pipeline vs. Production Static pipeline
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

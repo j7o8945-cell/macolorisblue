@@ -21,13 +21,17 @@ import {
 import { Work, Journal, AboutInfo, ContactInfo, ActiveTab, CustomTab } from './types';
 import { INITIAL_WORKS, INITIAL_JOURNALS, INITIAL_ABOUT, INITIAL_CONTACT } from './initialData';
 import defaultVideo from './assets/images/japanese_blue_ambient.mp4';
+import homeHeroImg from './assets/images/home_hero_1780643011034.png';
+import fukuokaRainImg from './assets/images/fukuoka_rain_1780643028212.png';
+import blueStationImg from './assets/images/blue_station_1780643044740.png';
+import summerCrossingImg from './assets/images/summer_crossing_1780643057527.png';
 
 // Premium high-quality photography presets for easy admin creation/replacement tasks
 const PHOTO_PRESETS = [
-  { url: '/src/assets/images/home_hero_1780643011034.png', label: '후쿠오카 저물녘 (Blue Hour)' },
-  { url: '/src/assets/images/fukuoka_rain_1780643028212.png', label: '비 내리는 텐진 (Rainy Fukuoka)' },
-  { url: '/src/assets/images/blue_station_1780643044740.png', label: '교토 밤기차 정류장 (Blue Station)' },
-  { url: '/src/assets/images/summer_crossing_1780643057527.png', label: '여름의 교차로 (Summer Crossing)' },
+  { url: homeHeroImg, label: '후쿠오카 저물녘 (Blue Hour)' },
+  { url: fukuokaRainImg, label: '비 내리는 텐진 (Rainy Fukuoka)' },
+  { url: blueStationImg, label: '교토 밤기차 정류장 (Blue Station)' },
+  { url: summerCrossingImg, label: '여름의 교차로 (Summer Crossing)' },
   { url: 'https://images.unsplash.com/photo-1542051841857-5f90071e7989?w=1000&auto=format&fit=crop&q=80', label: '도쿄 밤거리 골목길' },
   { url: 'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?w=1000&auto=format&fit=crop&q=80', label: '도쿄 가로등 자전거' },
   { url: 'https://images.unsplash.com/photo-1528164344705-47542687000d?w=1000&auto=format&fit=crop&q=80', label: '벚꽃 날리는 자판기' },
@@ -841,27 +845,46 @@ export default function App() {
       setContact({ ...tempContact });
       localStorage.setItem('macoloris_contact', JSON.stringify(tempContact));
       
+      let finalVideoUrlToSync = tempVideoUrl;
+
       // 3. Save Video Url
       if (tempVideoFile) {
         try {
           await saveVideoToIndexedDB(tempVideoFile);
           localStorage.setItem('macoloris_video_source', 'indexeddb');
           
-          const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-          if (isMobile || tempVideoFile.size < 12 * 1024 * 1024) {
+          // Read base64 synchronously as promise so we can upload it before syncing
+          const base64Data = await new Promise<string>((resolve) => {
             const reader = new FileReader();
-            reader.onloadend = () => {
-              if (typeof reader.result === 'string') {
-                localStorage.setItem('macoloris_video_url', 'indexeddb_data');
-                setVideoUrl(reader.result);
-              }
-            };
+            reader.onloadend = () => resolve(reader.result as string || '');
             reader.readAsDataURL(tempVideoFile);
-          } else {
-            const objUrl = URL.createObjectURL(tempVideoFile);
+          });
+
+          // Upload to backend storage on server disk
+          try {
+            const uploadRes = await fetch("/api/video/upload", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ base64: base64Data })
+            });
+            if (uploadRes.ok) {
+              const uploadData = await uploadRes.json();
+              localStorage.setItem('macoloris_video_url', uploadData.url);
+              localStorage.setItem('macoloris_video_source', 'url');
+              setVideoUrl(uploadData.url);
+              finalVideoUrlToSync = uploadData.url;
+            } else {
+              localStorage.setItem('macoloris_video_url', 'indexeddb_data');
+              setVideoUrl(base64Data);
+              finalVideoUrlToSync = 'indexeddb_data';
+            }
+          } catch (apiErr) {
+            console.error("Failed to upload video to server:", apiErr);
             localStorage.setItem('macoloris_video_url', 'indexeddb_data');
-            setVideoUrl(objUrl);
+            setVideoUrl(base64Data);
+            finalVideoUrlToSync = 'indexeddb_data';
           }
+          
           setTempVideoFile(null);
         } catch (err) {
           console.error("IndexedDB video save error:", err);
@@ -875,10 +898,12 @@ export default function App() {
             localStorage.setItem('macoloris_video_url', tempVideoUrl);
             setVideoUrl(tempVideoUrl);
             await deleteVideoFromIndexedDB();
+            finalVideoUrlToSync = tempVideoUrl;
           }
+        } else {
+          // Keep active videoUrl
+          finalVideoUrlToSync = videoUrl;
         }
-        // If they did not change tempVideoUrl (i.e. it matches the active videoUrl), we do NOT touch the video configuration
-        // to prevent accidental reset to the default video when saving other administrative settings.
       }
       
       // 4. Save Visible Sections
@@ -890,7 +915,7 @@ export default function App() {
         about: tempAbout,
         contact: tempContact,
         visibleSections: tempVisibleSections,
-        videoUrl: tempVideoFile ? 'indexeddb_data' : tempVideoUrl
+        videoUrl: finalVideoUrlToSync
       });
       
       // 5. Show save complete message
@@ -1298,32 +1323,30 @@ export default function App() {
     return (
       <div 
         className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] bg-cover bg-center bg-no-repeat text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden"
-        style={{ backgroundImage: "url('/src/assets/images/home_hero_1780643011034.png')" }}
+        style={{ backgroundImage: `url(${homeHeroImg})` }}
       >
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden">
-          {isVideoReady && (
-            <video 
-              ref={(el) => {
-                (videoRef as any).current = el;
-                if (el) {
-                  el.setAttribute('muted', 'true');
-                  el.setAttribute('playsinline', 'true');
-                  el.muted = true;
-                  el.playsInline = true;
-                  el.play().catch(() => {});
-                }
-              }}
-              key={videoUrl}
-              src={getPlayableVideoUrl(videoUrl)}
-              poster="/src/assets/images/home_hero_1780643011034.png"
-              autoPlay 
-              loop 
-              muted 
-              playsInline 
-              className="w-full h-full object-cover opacity-80"
-            />
-          )}
+          <video 
+            ref={(el) => {
+              (videoRef as any).current = el;
+              if (el) {
+                el.setAttribute('muted', 'true');
+                el.setAttribute('playsinline', 'true');
+                el.muted = true;
+                el.playsInline = true;
+                el.play().catch(() => {});
+              }
+            }}
+            key={videoUrl}
+            src={getPlayableVideoUrl(videoUrl)}
+            poster={homeHeroImg}
+            autoPlay 
+            loop 
+            muted 
+            playsInline 
+            className="w-full h-full object-cover opacity-80"
+          />
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65"></div>
           <div className="absolute inset-0 bg-black/30"></div>
@@ -2559,7 +2582,7 @@ export default function App() {
                         date: '2026.06',
                         emotion: '그리움',
                         preface: '',
-                        images: ['/src/assets/images/home_hero_1780643011034.png'],
+                        images: [homeHeroImg],
                         closing: '',
                         featured: true
                       });
@@ -3560,7 +3583,7 @@ export default function App() {
                           title: '',
                           content: '',
                           date: new Date().toISOString().split('T')[0].replace(/-/g, '.'),
-                          images: ['/src/assets/images/fukuoka_rain_1780643028212.png']
+                          images: [fukuokaRainImg]
                         });
                       }}
                       className="bg-[#4A6FA5] text-white font-mono text-[9px] px-2 py-0.5 rounded hover:bg-[#3d5e8c]"
