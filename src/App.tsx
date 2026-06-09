@@ -283,6 +283,7 @@ export default function App() {
   
   // High performance local video state
   const [tempVideoFile, setTempVideoFile] = useState<File | null>(null);
+  const [isVideoReady, setIsVideoReady] = useState<boolean>(false);
   const videoRef = React.useRef<HTMLVideoElement>(null);
   
   // --- Custom Tab/Sections States ---
@@ -536,18 +537,20 @@ export default function App() {
         if (blob) {
           // Safari/iOS blocks dynamic blob URL range queries, causing a black screen.
           // Converting smaller files instantly to Base64 allows Safari's out-of-process renderer to decode and play smoothly.
-          const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-          if (isIOS || blob.size < 12 * 1024 * 1024) {
+          const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+          if (isMobile || blob.size < 12 * 1024 * 1024) {
             const reader = new FileReader();
             reader.onloadend = () => {
               if (typeof reader.result === 'string') {
                 setVideoUrl(reader.result);
+                setIsVideoReady(true);
               }
             };
             reader.readAsDataURL(blob);
           } else {
             const objUrl = URL.createObjectURL(blob);
             setVideoUrl(objUrl);
+            setIsVideoReady(true);
           }
         } else {
           // fallback
@@ -558,7 +561,12 @@ export default function App() {
           } else {
             setVideoUrl(savedUrl);
           }
+          setIsVideoReady(true);
         }
+      }).catch(err => {
+        console.error("IndexedDB load failed:", err);
+        setVideoUrl(DEFAULT_VIDEO_URL);
+        setIsVideoReady(true);
       });
     } else {
       const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
@@ -569,6 +577,7 @@ export default function App() {
         setVideoUrl(DEFAULT_VIDEO_URL);
         localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
       }
+      setIsVideoReady(true);
     }
   }, []);
 
@@ -586,7 +595,7 @@ export default function App() {
 
   // Programmatically trigger video load & play to bypass aggressive mobile browser restrictions
   useEffect(() => {
-    if (videoRef.current) {
+    if (isVideoReady && videoRef.current) {
       const video = videoRef.current;
       video.muted = true;
       video.defaultMuted = true;
@@ -610,17 +619,9 @@ export default function App() {
         }
       };
 
-      try {
-        video.load();
-        const timer = setTimeout(() => {
-          playVideo();
-        }, 80);
-        return () => clearTimeout(timer);
-      } catch (err) {
-        console.error("Video play control error:", err);
-      }
+      playVideo();
     }
-  }, [videoUrl, hasEntered]);
+  }, [videoUrl, isVideoReady, hasEntered]);
 
   // --- Admin settings sync workspace ---
   useEffect(() => {
@@ -649,8 +650,8 @@ export default function App() {
           await saveVideoToIndexedDB(tempVideoFile);
           localStorage.setItem('macoloris_video_source', 'indexeddb');
           
-          const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-          if (isIOS || tempVideoFile.size < 12 * 1024 * 1024) {
+          const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+          if (isMobile || tempVideoFile.size < 12 * 1024 * 1024) {
             const reader = new FileReader();
             reader.onloadend = () => {
               if (typeof reader.result === 'string') {
@@ -660,26 +661,27 @@ export default function App() {
             };
             reader.readAsDataURL(tempVideoFile);
           } else {
-            localStorage.setItem('macoloris_video_url', tempVideoUrl);
-            setVideoUrl(tempVideoUrl);
+            const objUrl = URL.createObjectURL(tempVideoFile);
+            localStorage.setItem('macoloris_video_url', 'indexeddb_data');
+            setVideoUrl(objUrl);
           }
           setTempVideoFile(null);
         } catch (err) {
           console.error("IndexedDB video save error:", err);
-          alert("동영상 파일을 웹 데이터베이스에 저장하는 도중 오류가 발생했습니다. 브라우저 여유 공간을 확인해주십시오.");
+          alert("동영상 파일을 웹 데이터베이스에 저장하는 도중 오류가 발생했습니다. 브라우저 여유 공간이 부족하거나 보안 제약이 있는 환경(예: 일부 인앱 브라우저나 프라이빗 탭)일 수 있습니다. 직접 MP4 파일의 URL 주소를 입력하여 저장하시는 것을 추천합니다.");
         }
-      } else if (!tempVideoUrl.startsWith('blob:') && !tempVideoUrl.startsWith('data:')) {
-        localStorage.setItem('macoloris_video_source', 'url');
-        localStorage.setItem('macoloris_video_url', tempVideoUrl);
-        setVideoUrl(tempVideoUrl);
-        await deleteVideoFromIndexedDB();
       } else {
-        // Keeping current settings, if base64 exists by accident inside state, clean it
-        if (tempVideoUrl.startsWith('data:')) {
-          setVideoUrl(DEFAULT_VIDEO_URL);
-          localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
-          localStorage.setItem('macoloris_video_source', 'url');
+        // If there is no new file uploaded, check if the video URL was modified (and is not an internal blob/data link)
+        if (tempVideoUrl !== videoUrl && tempVideoUrl !== '') {
+          if (!tempVideoUrl.startsWith('blob:') && !tempVideoUrl.startsWith('data:') && tempVideoUrl !== 'indexeddb_data') {
+            localStorage.setItem('macoloris_video_source', 'url');
+            localStorage.setItem('macoloris_video_url', tempVideoUrl);
+            setVideoUrl(tempVideoUrl);
+            await deleteVideoFromIndexedDB();
+          }
         }
+        // If they did not change tempVideoUrl (i.e. it matches the active videoUrl), we do NOT touch the video configuration
+        // to prevent accidental reset to the default video when saving other administrative settings.
       }
       
       // 4. Save Visible Sections
@@ -1087,25 +1089,27 @@ export default function App() {
       <div className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden">
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden">
-          <video 
-            ref={(el) => {
-              (videoRef as any).current = el;
-              if (el) {
-                el.setAttribute('muted', 'true');
-                el.setAttribute('playsinline', 'true');
-                el.muted = true;
-                el.playsInline = true;
-                el.play().catch(() => {});
-              }
-            }}
-            key={videoUrl}
-            src={getPlayableVideoUrl(videoUrl)}
-            autoPlay 
-            loop 
-            muted 
-            playsInline 
-            className="w-full h-full object-cover opacity-80"
-          />
+          {isVideoReady && (
+            <video 
+              ref={(el) => {
+                (videoRef as any).current = el;
+                if (el) {
+                  el.setAttribute('muted', 'true');
+                  el.setAttribute('playsinline', 'true');
+                  el.muted = true;
+                  el.playsInline = true;
+                  el.play().catch(() => {});
+                }
+              }}
+              key={videoUrl}
+              src={getPlayableVideoUrl(videoUrl)}
+              autoPlay 
+              loop 
+              muted 
+              playsInline 
+              className="w-full h-full object-cover opacity-80"
+            />
+          )}
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65"></div>
           <div className="absolute inset-0 bg-black/30"></div>
