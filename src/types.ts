@@ -41,4 +41,3 @@ export interface CustomTab {
   visible: boolean;
   image?: string;
 }
-

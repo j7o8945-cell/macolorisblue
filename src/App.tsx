@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { Work, Journal, AboutInfo, ContactInfo, ActiveTab, CustomTab } from './types';
 import { INITIAL_WORKS, INITIAL_JOURNALS, INITIAL_ABOUT, INITIAL_CONTACT } from './initialData';
+import defaultVideo from './assets/images/japanese_blue_ambient.mp4';
 
 // Premium high-quality photography presets for easy admin creation/replacement tasks
 const PHOTO_PRESETS = [
@@ -124,8 +125,19 @@ const deleteVideoFromIndexedDB = (): Promise<void> => {
   });
 };
 
-const compressImageFile = (file: File, maxW = 1200, maxH = 1200, quality = 0.75): Promise<string> => {
+const compressImageFile = (file: File, maxW = 2048, maxH = 2048, quality = 0.92): Promise<string> => {
   return new Promise((resolve) => {
+    // 만약 파일 크기가 아주 작고 이미 최적화된 상태라면 (< 400KB), Canvas 스케일링을 거치지 않고 원본 화질 그대로 data URL로 읽어들여 원본 화질을 상실 없이 완벽히 유지합니다.
+    if (file.size < 400 * 1024) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        resolve(e.target?.result as string || '');
+      };
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = new Image();
@@ -134,6 +146,7 @@ const compressImageFile = (file: File, maxW = 1200, maxH = 1200, quality = 0.75)
         let width = img.width;
         let height = img.height;
         
+        // 고해상도 경계를 초과하는 경우에만 비율 유지하여 스케일 다운
         if (width > height) {
           if (width > maxW) {
             height = Math.round((height * maxW) / width);
@@ -150,8 +163,18 @@ const compressImageFile = (file: File, maxW = 1200, maxH = 1200, quality = 0.75)
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (ctx) {
+          // 브라우저 렌더러의 고화질 스무딩 기법 활성화
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', quality));
+          
+          // PNG가 투명 영역을 가진 경우를 안전하게 보존하기 위함
+          const mimeType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+          if (mimeType === 'image/png') {
+            resolve(canvas.toDataURL('image/png'));
+          } else {
+            resolve(canvas.toDataURL('image/jpeg', quality));
+          }
         } else {
           resolve(e.target?.result as string);
         }
@@ -168,13 +191,13 @@ const compressImageFile = (file: File, maxW = 1200, maxH = 1200, quality = 0.75)
   });
 };
 
-const DEFAULT_VIDEO_URL = 'https://assets.mixkit.co/videos/preview/mixkit-tokyo-street-strolls-at-night-with-neon-lights-43950-large.mp4';
+const DEFAULT_VIDEO_URL = defaultVideo;
 
 const blobUrlCache = new Map<string, string>();
 
 const getPlayableVideoUrl = (url: string): string => {
   if (!url) return '';
-  if (url === 'video.mp4') return DEFAULT_VIDEO_URL;
+  if (url === 'video.mp4' || url.includes('mixkit.co') || url === 'indexeddb_data') return DEFAULT_VIDEO_URL;
   if (!url.startsWith('data:video/')) return url;
   
   const cached = blobUrlCache.get(url);
@@ -216,6 +239,47 @@ export default function App() {
   const [journals, setJournals] = useState<Journal[]>([]);
   const [about, setAbout] = useState<AboutInfo>(INITIAL_ABOUT);
   const [contact, setContact] = useState<ContactInfo>(INITIAL_CONTACT);
+  
+  // --- Persistent Emotion States ---
+  const [emotions, setEmotions] = useState<{ name: string; english: string; description: string; detail: string }[]>(() => {
+    const saved = localStorage.getItem('macoloris_emotions');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (_) {}
+    }
+    return [
+      { 
+        name: '그리움', 
+        english: 'Nostalgia', 
+        description: '해질녘의 긴 여운처럼, 마음 한편에 소리 없이 쌓여 지워지지 않는 그리움의 기록들.', 
+        detail: '사그라지지 않고 남아 있는 그늘진 마음의 결들.' 
+      },
+      { 
+        name: '외로움', 
+        english: 'Solitude', 
+        description: '가만히 시선을 돌렸을 때, 고요 위로 길게 늘어앉았던 소박한 홀로됨의 순간들.', 
+        detail: '세상이 잠든 고요한 역장, 온전히 한 사람으로 머물던 어귀의 푸른 어둠.' 
+      },
+      { 
+        name: '청춘', 
+        english: 'Youth', 
+        description: '미완성의 서투른 날갯짓처럼, 거리를 채우는 자전거 바퀴와 빨간 신호등의 감각.', 
+        detail: '서투르고 온당하지만 무엇보다 찬연히 빛났던 그날들의 조각.' 
+      },
+      { 
+        name: '여름', 
+        english: 'Summer (Natsu)', 
+        description: '푸른 하늘과 눈부신 뭉게구름, 그리고 뜨거웠던 모래바람마저 애틋했던 찬란한 기억.', 
+        detail: '바다 지평선과 끝없던 푸른 하늘, 그리고 한 줄기 소나기의 감성.' 
+      }
+    ];
+  });
+
+  const saveEmotionsToStorage = (updatedList: typeof emotions) => {
+    setEmotions(updatedList);
+    localStorage.setItem('macoloris_emotions', JSON.stringify(updatedList));
+  };
   
   // High performance local video state
   const [tempVideoFile, setTempVideoFile] = useState<File | null>(null);
@@ -388,8 +452,42 @@ export default function App() {
   // --- Admin Editing Forms State ---
   const [editingWork, setEditingWork] = useState<Partial<Work> | null>(null);
   const [editingJournal, setEditingJournal] = useState<Partial<Journal> | null>(null);
+  const [editingEmotion, setEditingEmotion] = useState<{ originalName?: string; name: string; english: string; description: string; detail: string } | null>(null);
   const [isCreatingNewWork, setIsCreatingNewWork] = useState<boolean>(false);
   const [isCreatingNewJournal, setIsCreatingNewJournal] = useState<boolean>(false);
+  const [isCreatingNewEmotion, setIsCreatingNewEmotion] = useState<boolean>(false);
+
+  // --- Drag and Drop / Tap-to-Swap reorder states ---
+  const [draggedWorkImageIdx, setDraggedWorkImageIdx] = useState<number | null>(null);
+  const [draggedJournalImageIdx, setDraggedJournalImageIdx] = useState<number | null>(null);
+  const [dragHoverWorkImageIdx, setDragHoverWorkImageIdx] = useState<number | null>(null);
+  const [dragHoverJournalImageIdx, setDragHoverJournalImageIdx] = useState<number | null>(null);
+  const [selectedReorderWorkImageIdx, setSelectedReorderWorkImageIdx] = useState<number | null>(null);
+  const [selectedReorderJournalImageIdx, setSelectedReorderJournalImageIdx] = useState<number | null>(null);
+
+  const handleDropWorkImage = (targetIdx: number) => {
+    if (draggedWorkImageIdx === null || !editingWork || !editingWork.images) return;
+    if (draggedWorkImageIdx === targetIdx) return;
+    const newImages = [...editingWork.images];
+    const draggedImg = newImages[draggedWorkImageIdx];
+    newImages.splice(draggedWorkImageIdx, 1);
+    newImages.splice(targetIdx, 0, draggedImg);
+    setEditingWork({ ...editingWork, images: newImages });
+    setDraggedWorkImageIdx(null);
+    setDragHoverWorkImageIdx(null);
+  };
+
+  const handleDropJournalImage = (targetIdx: number) => {
+    if (draggedJournalImageIdx === null || !editingJournal || !editingJournal.images) return;
+    if (draggedJournalImageIdx === targetIdx) return;
+    const newImages = [...editingJournal.images];
+    const draggedImg = newImages[draggedJournalImageIdx];
+    newImages.splice(draggedJournalImageIdx, 1);
+    newImages.splice(targetIdx, 0, draggedImg);
+    setEditingJournal({ ...editingJournal, images: newImages });
+    setDraggedJournalImageIdx(null);
+    setDragHoverJournalImageIdx(null);
+  };
 
   // --- Initialize data from localStorage ---
   useEffect(() => {
@@ -454,15 +552,20 @@ export default function App() {
         } else {
           // fallback
           const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
-          setVideoUrl(savedUrl);
+          if (savedUrl === 'indexeddb_data' || savedUrl === 'video.mp4' || savedUrl.includes('mixkit.co')) {
+            setVideoUrl(DEFAULT_VIDEO_URL);
+            localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
+          } else {
+            setVideoUrl(savedUrl);
+          }
         }
       });
     } else {
       const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
-      if (savedUrl && !savedUrl.startsWith('data:') && !savedUrl.startsWith('blob:')) {
+      if (savedUrl && !savedUrl.startsWith('data:') && !savedUrl.startsWith('blob:') && savedUrl !== 'indexeddb_data' && savedUrl !== 'video.mp4' && !savedUrl.includes('mixkit.co')) {
         setVideoUrl(savedUrl);
       } else {
-        // Clear any old, lag-inducing Base64 video strings to instantly restore premium performance
+        // Clear any old, lag-inducing Base64 or blocked video strings to instantly restore premium performance
         setVideoUrl(DEFAULT_VIDEO_URL);
         localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
       }
@@ -696,6 +799,7 @@ export default function App() {
       saveContactToStorage(INITIAL_CONTACT);
       localStorage.removeItem('macoloris_video_url');
       localStorage.removeItem('macoloris_visible_sections');
+      localStorage.removeItem('macoloris_emotions');
       alert('초기 국가/감정 포트폴리오 상태로 성공적으로 재설정되었습니다.');
       window.location.reload();
     }
@@ -760,6 +864,108 @@ export default function App() {
       saveWorksToStorage(filtered);
       if (selectedWorkId === id) setSelectedWorkId(null);
     }
+  };
+
+  // --- Emotion Logic (Add, Edit, Delete) ---
+  const handleSaveEmotion = (e: FormEvent) => {
+    e.preventDefault();
+    if (!editingEmotion || !editingEmotion.name) {
+      alert('감정 이름은 필수 항목입니다.');
+      return;
+    }
+
+    const cleanName = editingEmotion.name.trim();
+    if (!cleanName) {
+      alert('올바른 감정 이름을 입력해주세요.');
+      return;
+    }
+
+    const emotionData = {
+      name: cleanName,
+      english: (editingEmotion.english || '').trim() || 'Custom Sentiments',
+      description: (editingEmotion.description || '').trim() || `"${cleanName}에 관한 마음의 조각들."`,
+      detail: (editingEmotion.detail || '').trim() || `"${cleanName} 아래 스쳐 간 기억의 결들."`
+    };
+
+    let updatedList = [...emotions];
+
+    if (isCreatingNewEmotion) {
+      // Check for duplicate name
+      if (emotions.some(emo => emo.name === cleanName)) {
+        alert('이미 동일한 이름의 감정 분위기가 존재합니다.');
+        return;
+      }
+      updatedList.push(emotionData);
+    } else {
+      const origName = editingEmotion.originalName;
+      const index = emotions.findIndex(emo => emo.name === origName);
+      if (index > -1) {
+        // If name changed, check duplicate for the new name
+        if (cleanName !== origName && emotions.some(emo => emo.name === cleanName)) {
+          alert('이미 동일한 이름의 감정 분위기가 존재합니다.');
+          return;
+        }
+        updatedList[index] = emotionData;
+
+        // Cascade rename into existing works!
+        if (origName && cleanName !== origName) {
+          const updatedWorks = works.map(w => w.emotion === origName ? { ...w, emotion: cleanName } : w);
+          setWorks(updatedWorks);
+          saveWorksToStorage(updatedWorks);
+        }
+      } else {
+        updatedList.push(emotionData);
+      }
+    }
+
+    saveEmotionsToStorage(updatedList);
+    setEditingEmotion(null);
+    setIsCreatingNewEmotion(false);
+    alert('감정 키워드가 성공적으로 저장되어 전체 탭 및 포탈에 반영되었습니다.');
+  };
+
+  const handleDeleteEmotion = (nameToDelete: string) => {
+    if (emotions.length <= 1) {
+      alert('최소 하나의 감정 분위기는 시스템에 남아있어야 에세이를 매핑할 수 있습니다.');
+      return;
+    }
+
+    if (window.confirm(`"${nameToDelete}" 감정 분위기를 정말로 삭제하시겠습니까?\n이 감정 분위기 하에 등록되었던 기존 포트폴리오 에세이들은 자동으로 다른 감정 분위기로 이관됩니다.`)) {
+      const fallbackName = emotions.find(e => e.name !== nameToDelete)?.name || '그리움';
+      
+      // Cascade delete / fallback existing works!
+      const updatedWorks = works.map(w => w.emotion === nameToDelete ? { ...w, emotion: fallbackName } : w);
+      setWorks(updatedWorks);
+      saveWorksToStorage(updatedWorks);
+
+      // Filter emotions list
+      const filtered = emotions.filter(emo => emo.name !== nameToDelete);
+      saveEmotionsToStorage(filtered);
+
+      // Reset selected filter if currently selected
+      if (selectedEmotion === nameToDelete) {
+        setSelectedEmotion(null);
+      }
+      alert(`"${nameToDelete}" 감정 키워드가 삭제되었으며, 관련 에세이들은 "${fallbackName}" 분위기로 이관되었습니다.`);
+    }
+  };
+
+  const handleMoveEmotionUp = (index: number) => {
+    if (index === 0) return;
+    const updated = [...emotions];
+    const temp = updated[index];
+    updated[index] = updated[index - 1];
+    updated[index - 1] = temp;
+    saveEmotionsToStorage(updated);
+  };
+
+  const handleMoveEmotionDown = (index: number) => {
+    if (index === emotions.length - 1) return;
+    const updated = [...emotions];
+    const temp = updated[index];
+    updated[index] = updated[index + 1];
+    updated[index + 1] = temp;
+    saveEmotionsToStorage(updated);
   };
 
   // --- Journal Logic ---
@@ -1392,7 +1598,7 @@ export default function App() {
                   <span className="text-[12px] font-sans h-3 flex items-center font-bold">{!selectedEmotion ? '—' : '·'}</span>
                   <span>All ({works.length})</span>
                 </button>
-                {['그리움', '외로움', '청춘', '여름'].map((emo) => {
+                {emotions.map(e => e.name).map((emo) => {
                   const count = works.filter(w => w.emotion === emo).length;
                   const isActive = selectedEmotion === emo;
                   return (
@@ -1735,91 +1941,32 @@ export default function App() {
             {/* If no emotion is selected, show general category list */}
             {!selectedEmotion ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 lg:gap-10 max-w-5xl mx-auto">
-                
-                {/* 1. 그리움 (Nostalgia) */}
-                <div 
-                  onClick={() => { setSelectedEmotion('그리움'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  className="group cursor-pointer bg-[#E8E7E2]/50 border border-gray-200 p-8 rounded shadow-xs relative overflow-hidden transition-all duration-500 hover:shadow-md hover:bg-[#E8E7E2]/70 hover:border-[#4A6FA5]/45"
-                >
-                  <div className="absolute top-0 right-0 w-32 h-32 bg-[#4A6FA5]/5 rounded-full -mr-10 -mt-10 group-hover:scale-110 transition-transform duration-700"></div>
-                  
-                  <span className="font-mono text-[10px] tracking-widest text-[#4A6FA5] uppercase font-semibold">EMOTION 01</span>
-                  <h4 className="font-serif text-xl tracking-widest text-[#222222] font-bold uppercase mt-2 mb-4">
-                    그리움 <span className="font-serif text-xs text-[#222222]/60 font-light italic ml-2">Nostalgia</span>
-                  </h4>
-                  <p className="font-serif-ja text-[12px] text-[#222222]/60 leading-relaxed mb-6">
-                    "해질녘의 긴 여운처럼, 마음 한편에 소리 없이 쌓여 지워지지 않는 그리움의 기록들."
-                  </p>
-                  
-                  <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-widest text-[#4A6FA5] font-bold uppercase">
-                    <span>EXPLORE PORTAL</span>
-                    <ChevronRight size={12} className="transform group-hover:translate-x-1 transition-transform" />
-                  </div>
-                </div>
-
-                {/* 2. 외로움 (Solitude) */}
-                <div 
-                  onClick={() => { setSelectedEmotion('외로움'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  className="group cursor-pointer bg-[#DFDFD9]/50 border border-gray-200 p-8 rounded shadow-xs relative overflow-hidden transition-all duration-500 hover:shadow-md hover:bg-[#DFDFD9]/70 hover:border-[#4A6FA5]/45"
-                >
-                  <div className="absolute top-0 right-0 w-32 h-32 bg-[#4A6FA5]/5 rounded-full -mr-10 -mt-10 group-hover:scale-110 transition-transform duration-700"></div>
-                  
-                  <span className="font-mono text-[10px] tracking-widest text-[#4A6FA5] uppercase font-semibold">EMOTION 02</span>
-                  <h4 className="font-serif text-xl tracking-widest text-[#222222] font-bold uppercase mt-2 mb-4">
-                    외로움 <span className="font-serif text-xs text-[#222222]/60 font-light italic ml-2">Solitude</span>
-                  </h4>
-                  <p className="font-serif-ja text-[12px] text-[#222222]/60 leading-relaxed mb-6">
-                    "가만히 시선을 돌렸을 때, 고요 위로 길게 늘어앉았던 소박한 홀로됨의 순간들."
-                  </p>
-                  
-                  <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-widest text-[#4A6FA5] font-bold uppercase">
-                    <span>EXPLORE PORTAL</span>
-                    <ChevronRight size={12} className="transform group-hover:translate-x-1 transition-transform" />
-                  </div>
-                </div>
-
-                {/* 3. 청춘 (Youth) */}
-                <div 
-                  onClick={() => { setSelectedEmotion('청춘'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  className="group cursor-pointer bg-[#E5E4DE]/50 border border-gray-200 p-8 rounded shadow-xs relative overflow-hidden transition-all duration-500 hover:shadow-md hover:bg-[#E5E4DE]/70 hover:border-[#4A6FA5]/45"
-                >
-                  <div className="absolute top-0 right-0 w-32 h-32 bg-[#4A6FA5]/5 rounded-full -mr-10 -mt-10 group-hover:scale-110 transition-transform duration-700"></div>
-                  
-                  <span className="font-mono text-[10px] tracking-widest text-[#4A6FA5] uppercase font-semibold">EMOTION 03</span>
-                  <h4 className="font-serif text-xl tracking-widest text-[#222222] font-bold uppercase mt-2 mb-4">
-                    청춘 <span className="font-serif text-xs text-[#222222]/60 font-light italic ml-2">Youth</span>
-                  </h4>
-                  <p className="font-serif-ja text-[12px] text-[#222222]/60 leading-relaxed mb-6">
-                    "미완성의 서투른 날갯짓처럼, 거리를 채우는 자전거 바퀴와 빨간 신호등의 감각."
-                  </p>
-                  
-                  <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-widest text-[#4A6FA5] font-bold uppercase">
-                    <span>EXPLORE PORTAL</span>
-                    <ChevronRight size={12} className="transform group-hover:translate-x-1 transition-transform" />
-                  </div>
-                </div>
-
-                {/* 4. 여름 (Summer) */}
-                <div 
-                  onClick={() => { setSelectedEmotion('여름'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  className="group cursor-pointer bg-[#E0E2E5]/50 border border-gray-200 p-8 rounded shadow-xs relative overflow-hidden transition-all duration-500 hover:shadow-md hover:bg-[#E0E2E5]/70 hover:border-[#4A6FA5]/45"
-                >
-                  <div className="absolute top-0 right-0 w-32 h-32 bg-[#4A6FA5]/5 rounded-full -mr-10 -mt-10 group-hover:scale-110 transition-transform duration-700"></div>
-                  
-                  <span className="font-mono text-[10px] tracking-widest text-[#4A6FA5] uppercase font-semibold">EMOTION 04</span>
-                  <h4 className="font-serif text-xl tracking-widest text-[#222222] font-bold uppercase mt-2 mb-4">
-                    여름 <span className="font-serif text-xs text-[#222222]/60 font-light italic ml-2">Summer (Natsu)</span>
-                  </h4>
-                  <p className="font-serif-ja text-[12px] text-[#222222]/60 leading-relaxed mb-6">
-                    "푸른 하늘과 눈부신 뭉게구름, 그리고 뜨거웠던 모래바람마저 애틋했던 찬란한 기억."
-                  </p>
-                  
-                  <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-widest text-[#4A6FA5] font-bold uppercase">
-                    <span>EXPLORE PORTAL</span>
-                    <ChevronRight size={12} className="transform group-hover:translate-x-1 transition-transform" />
-                  </div>
-                </div>
-
+                {emotions.map((emoObj, index) => {
+                  const colors = ['bg-[#E8E7E2]/50 hover:bg-[#E8E7E2]/70', 'bg-[#DFDFD9]/50 hover:bg-[#DFDFD9]/70', 'bg-[#E5E4DE]/50 hover:bg-[#E5E4DE]/70', 'bg-[#E0E2E5]/50 hover:bg-[#E0E2E5]/70', 'bg-[#E8E8E3]/50 hover:bg-[#E8E8E3]/70', 'bg-[#D6D8D9]/50 hover:bg-[#D6D8D9]/70'];
+                  const colorClass = colors[index % colors.length];
+                  return (
+                    <div 
+                      key={emoObj.name}
+                      onClick={() => { setSelectedEmotion(emoObj.name); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                      className={`group cursor-pointer border border-gray-200 p-8 rounded shadow-xs relative overflow-hidden transition-all duration-500 hover:shadow-md hover:border-[#4A6FA5]/45 ${colorClass}`}
+                    >
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-[#4A6FA5]/5 rounded-full -mr-10 -mt-10 group-hover:scale-110 transition-transform duration-700"></div>
+                      
+                      <span className="font-mono text-[10px] tracking-widest text-[#4A6FA5] uppercase font-semibold">EMOTION {String(index + 1).padStart(2, '0')}</span>
+                      <h4 className="font-serif text-xl tracking-widest text-[#222222] font-bold uppercase mt-2 mb-4">
+                        {emoObj.name} <span className="font-serif text-xs text-[#222222]/60 font-light italic ml-2">{emoObj.english}</span>
+                      </h4>
+                      <p className="font-serif-ja text-[12px] text-[#222222]/60 leading-relaxed mb-6 font-medium">
+                        {emoObj.description}
+                      </p>
+                      
+                      <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-widest text-[#4A6FA5] font-bold uppercase">
+                        <span>EXPLORE PORTAL</span>
+                        <ChevronRight size={12} className="transform group-hover:translate-x-1 transition-transform" />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               // Emotion Specific Gallery View styled with layout matching design HTML
@@ -1839,10 +1986,10 @@ export default function App() {
                     JOURNAL STATE: <span className="text-[#4A6FA5] uppercase">{selectedEmotion}</span>
                   </h4>
                   <p className="text-xs text-[#222222]/60 mt-2 font-serif-ja leading-relaxed italic">
-                    {selectedEmotion === '그리움' && '"사그라지지 않고 남아 있는 그늘진 마음의 결들."'}
-                    {selectedEmotion === '외로움' && '"세상이 잠든 고요한 역장, 온전히 한 사람으로 머물던 어귀의 푸른 어둠."'}
-                    {selectedEmotion === '청춘' && '"서투르고 온당하지만 무엇보다 찬연히 빛났던 그날들의 조각."'}
-                    {selectedEmotion === '여름' && '"바다 지평선과 끝없던 푸른 하늘, 그리고 한 줄기 소나기의 감성."'}
+                    {(() => {
+                      const found = emotions.find(e => e.name === selectedEmotion);
+                      return found ? `"${found.detail}"` : '"스쳐 간 기억의 결들."';
+                    })()}
                   </p>
                 </div>
 
@@ -2261,14 +2408,13 @@ export default function App() {
                       <div>
                         <label className="block font-mono text-[10px] text-[#222222]/70 uppercase mb-1">감정 분위기 (Emotion Label)</label>
                         <select 
-                          value={editingWork.emotion || '그리움'}
+                          value={editingWork.emotion || (emotions[0]?.name || '그리움')}
                           onChange={(e) => setEditingWork({...editingWork, emotion: e.target.value})}
                           className="w-full bg-white p-2 border border-[#222222]/15 rounded font-serif-ja font-semibold"
                         >
-                          <option value="그리움">그리움 (Nostalgia)</option>
-                          <option value="외로움">외로움 (Solitude)</option>
-                          <option value="청춘">청춘 (Youth)</option>
-                          <option value="여름">여름 (Summer)</option>
+                          {emotions.map(e => (
+                            <option key={e.name} value={e.name}>{e.name} ({e.english})</option>
+                          ))}
                         </select>
                       </div>
                     </div>
@@ -2333,82 +2479,134 @@ export default function App() {
                         </div>
                         {editingWork.images && editingWork.images.length > 0 && (
                           <div className="mt-3">
-                            <span className="text-[9px] text-gray-500 block mb-1 font-bold">등록된 미디어 목록 ({editingWork.images.length}개) - 마우스를 각 항목 위에 올리면 순서 변경 및 삭제 버튼이 활성화됩니다:</span>
-                            <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto bg-stone-100 p-2 rounded border">
-                              {editingWork.images.map((img, idx) => (
-                                <div key={idx} className="relative w-16 h-16 rounded overflow-hidden border bg-stone-200 group/workmedia flex flex-col justify-between">
-                                  {isVideoUrl(img) ? (
-                                    <video 
-                                      src={getPlayableVideoUrl(img)} 
-                                      className="w-full h-full object-cover" 
-                                      ref={(el) => {
-                                        if (el) {
-                                          el.setAttribute('muted', 'true');
-                                          el.setAttribute('playsinline', 'true');
-                                          el.muted = true;
-                                          el.playsInline = true;
-                                          el.play().catch(() => {});
+                            <span className="text-[10px] text-[#222222]/80 block mb-1 font-bold">
+                              📷 등록된 미디어 목록 ({editingWork.images.length}개)
+                            </span>
+                            <p className="text-[9px] text-[#4A6FA5] font-semibold mb-2 bg-sky-50 p-1.5 rounded leading-normal border border-sky-100">
+                              💡 <b>순서 변경 방법</b>: 항목을 마우스로 직접 <b>드래그 앤 드롭</b>하여 끌어다 놓거나, 모바일에서는 <b>바꾸고 싶은 두 항목을 차례대로 터치</b>하면 간편하게 순서가 바뀝니다!
+                            </p>
+                            <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto bg-stone-100 p-2 rounded border border-stone-200">
+                              {editingWork.images.map((img, idx) => {
+                                const isDragged = draggedWorkImageIdx === idx;
+                                const isHovered = dragHoverWorkImageIdx === idx;
+                                const isSelected = selectedReorderWorkImageIdx === idx;
+                                const hasSelectionInList = selectedReorderWorkImageIdx !== null;
+
+                                return (
+                                  <div 
+                                    key={idx} 
+                                    draggable={true}
+                                    onDragStart={(e) => {
+                                      setDraggedWorkImageIdx(idx);
+                                      e.dataTransfer.effectAllowed = 'move';
+                                    }}
+                                    onDragOver={(e) => e.preventDefault()}
+                                    onDragEnter={(e) => {
+                                      e.preventDefault();
+                                      setDragHoverWorkImageIdx(idx);
+                                    }}
+                                    onDragLeave={() => {
+                                      if (dragHoverWorkImageIdx === idx) setDragHoverWorkImageIdx(null);
+                                    }}
+                                    onDragEnd={() => {
+                                      setDraggedWorkImageIdx(null);
+                                      setDragHoverWorkImageIdx(null);
+                                    }}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      handleDropWorkImage(idx);
+                                    }}
+                                    onClick={(e) => {
+                                      const target = e.target as HTMLElement;
+                                      if (target.closest('button')) return;
+                                      
+                                      if (selectedReorderWorkImageIdx === null) {
+                                        setSelectedReorderWorkImageIdx(idx);
+                                      } else {
+                                        if (selectedReorderWorkImageIdx !== idx) {
+                                          const newImages = [...(editingWork.images || [])];
+                                          const draggedImg = newImages[selectedReorderWorkImageIdx];
+                                          newImages.splice(selectedReorderWorkImageIdx, 1);
+                                          newImages.splice(idx, 0, draggedImg);
+                                          setEditingWork({ ...editingWork, images: newImages });
                                         }
-                                      }}
-                                      muted 
-                                      playsInline 
-                                    />
-                                  ) : (
-                                    <img src={img} className="w-full h-full object-cover" alt="Preview" referrerPolicy="no-referrer" />
-                                  )}
-                                  
-                                  {/* Hover Control Overlay with Reordering and Delete */}
-                                  <div className="absolute inset-0 bg-black/60 flex flex-col justify-between p-1 opacity-0 group-hover/workmedia:opacity-100 transition-opacity">
-                                    <div className="flex justify-between w-full">
+                                        setSelectedReorderWorkImageIdx(null);
+                                      }
+                                    }}
+                                    className={`relative w-20 h-20 rounded overflow-hidden border bg-stone-200 transition-all duration-250 cursor-grab active:cursor-grabbing group/workmedia flex flex-col justify-between select-none
+                                      ${isDragged ? 'opacity-30 border-dashed border-sky-400 bg-sky-50 scale-95' : 'border-stone-300'}
+                                      ${isHovered ? 'scale-105 border-double border-2 border-sky-500 shadow-md ring-1 ring-sky-300 z-10' : ''}
+                                      ${isSelected ? 'scale-105 ring-2 ring-[#4A6FA5] border-[#4A6FA5] z-10 shadow-lg' : ''}
+                                      ${!isSelected && hasSelectionInList ? 'hover:border-sky-300 active:scale-102' : ''}
+                                    `}
+                                  >
+                                    {isVideoUrl(img) ? (
+                                      <video 
+                                        src={getPlayableVideoUrl(img)} 
+                                        className="w-full h-full object-cover pointer-events-none" 
+                                        ref={(el) => {
+                                          if (el) {
+                                            el.setAttribute('muted', 'true');
+                                            el.setAttribute('playsinline', 'true');
+                                            el.muted = true;
+                                            el.playsInline = true;
+                                            el.play().catch(() => {});
+                                          }
+                                        }}
+                                        muted 
+                                        playsInline 
+                                      />
+                                    ) : (
+                                      <img src={img} className="w-full h-full object-cover pointer-events-none" alt="Preview" referrerPolicy="no-referrer" />
+                                    )}
+                                    
+                                    {/* Visual Indicator of Move Selection */}
+                                    {isSelected && (
+                                      <div className="absolute inset-0 bg-[#4A6FA5]/25 flex items-center justify-center pointer-events-none">
+                                        <div className="bg-[#4A6FA5] text-white text-[8px] px-1.5 py-0.5 rounded-full font-bold shadow animate-pulse">
+                                          여기 클릭시 이동
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Drag & Drop Visual Indicator overlay when there is any item dragged */}
+                                    {draggedWorkImageIdx !== null && !isDragged && (
+                                      <div className="absolute inset-0 bg-transparent border-dashed border border-sky-400/50 pointer-events-none flex items-center justify-center">
+                                        <div className="text-[7px] text-sky-600 bg-white/95 px-1 rounded shadow-sm">놓기</div>
+                                      </div>
+                                    )}
+
+                                    {/* Hover Control Overlay with Index and Delete */}
+                                    <div className="absolute inset-x-0 bottom-0 bg-black/65 p-1 opacity-0 group-hover/workmedia:opacity-100 transition-opacity flex justify-between items-center z-10">
+                                      <span className="text-white text-[8px] font-mono font-bold tracking-tighter">#{idx + 1}</span>
                                       <button
                                         type="button"
-                                        disabled={idx === 0}
-                                        onClick={() => {
-                                          const newImages = [...editingWork.images];
-                                          const temp = newImages[idx];
-                                          newImages[idx] = newImages[idx - 1];
-                                          newImages[idx - 1] = temp;
-                                          setEditingWork({ ...editingWork, images: newImages });
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setEditingWork({
+                                            ...editingWork,
+                                            images: editingWork.images.filter((_, i) => i !== idx)
+                                          });
+                                          if (selectedReorderWorkImageIdx === idx) setSelectedReorderWorkImageIdx(null);
                                         }}
-                                        className="text-white disabled:opacity-30 hover:bg-stone-850 bg-black/50 px-1 rounded text-[8px] font-mono cursor-pointer"
-                                        title="앞으로 이동"
+                                        className="bg-red-600 hover:bg-red-700 text-white px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer transition-colors"
                                       >
-                                        ◀
-                                      </button>
-                                      <button
-                                        type="button"
-                                        disabled={idx === editingWork.images.length - 1}
-                                        onClick={() => {
-                                          const newImages = [...editingWork.images];
-                                          const temp = newImages[idx];
-                                          newImages[idx] = newImages[idx + 1];
-                                          newImages[idx + 1] = temp;
-                                          setEditingWork({ ...editingWork, images: newImages });
-                                        }}
-                                        className="text-white disabled:opacity-30 hover:bg-stone-850 bg-black/50 px-1 rounded text-[8px] font-mono cursor-pointer"
-                                        title="뒤로 이동"
-                                      >
-                                        ▶
+                                        삭제
                                       </button>
                                     </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setEditingWork({
-                                          ...editingWork,
-                                          images: editingWork.images.filter((_, i) => i !== idx)
-                                        });
-                                      }}
-                                      className="bg-red-600 hover:bg-red-700 text-white w-full py-0.5 rounded text-[8px] text-center font-bold tracking-wider cursor-pointer font-sans"
-                                    >
-                                      삭제
-                                    </button>
+                                    
+                                    {/* Permanent index label */}
+                                    <div className="absolute top-1 left-1 bg-black/50 text-white font-mono text-[7px] px-1 rounded z-10">
+                                      #{idx + 1}
+                                    </div>
+
+                                    {/* Permanent Grip handle hint */}
+                                    <div className="absolute top-1 right-1 bg-white/75 text-gray-700 p-0.5 rounded-full shadow-sm cursor-grab group-hover/workmedia:bg-white transition-colors z-10">
+                                      <svg xmlns="http://www.w3.org/2000/svg" width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-grip-vertical"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></svg>
+                                    </div>
                                   </div>
-                                  <div className="absolute bottom-0 right-0 bg-black/50 text-white font-mono text-[8px] px-1 rounded-tl">
-                                    #{idx + 1}
-                                  </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           </div>
                         )}
@@ -3212,83 +3410,135 @@ export default function App() {
                           <p className="text-[10px] text-[#222222]/70 font-mono">📷 클릭하거나 미디어를 드래그하여 업로드 (사진/동영상 다중 선택 가능)</p>
                         </div>
                         {editingJournal.images && editingJournal.images.length > 0 && (
-                          <div className="mt-3 text-[9px]">
-                            <span className="text-gray-500 block mb-1 font-bold">등록된 미디어 목록 ({editingJournal.images.length}개) - 마우스를 올리면 순서를 재배치하거나 제거할 수 있습니다:</span>
-                            <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto bg-stone-100 p-2 rounded border">
-                              {editingJournal.images.map((img, idx) => (
-                                <div key={idx} className="relative w-16 h-16 rounded overflow-hidden border bg-stone-200 group/journalmedia flex flex-col justify-between">
-                                  {isVideoUrl(img) ? (
-                                    <video 
-                                      src={getPlayableVideoUrl(img)} 
-                                      className="w-full h-full object-cover" 
-                                      ref={(el) => {
-                                        if (el) {
-                                          el.setAttribute('muted', 'true');
-                                          el.setAttribute('playsinline', 'true');
-                                          el.muted = true;
-                                          el.playsInline = true;
-                                          el.play().catch(() => {});
+                          <div className="mt-3">
+                            <span className="text-[10px] text-[#222222]/80 block mb-1 font-bold">
+                              📷 등록된 미디어 목록 ({editingJournal.images.length}개)
+                            </span>
+                            <p className="text-[9px] text-[#4A6FA5] font-semibold mb-2 bg-sky-50 p-1.5 rounded leading-normal border border-sky-100">
+                              💡 <b>순서 변경 방법</b>: 항목을 마우스로 직접 <b>드래그 앤 드롭</b>하여 끌어다 놓거나, 모바일에서는 <b>바꾸고 싶은 두 항목을 차례대로 터치</b>하면 간편하게 순서가 바뀝니다!
+                            </p>
+                            <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto bg-stone-100 p-2 rounded border border-stone-200">
+                              {editingJournal.images.map((img, idx) => {
+                                const isDragged = draggedJournalImageIdx === idx;
+                                const isHovered = dragHoverJournalImageIdx === idx;
+                                const isSelected = selectedReorderJournalImageIdx === idx;
+                                const hasSelectionInList = selectedReorderJournalImageIdx !== null;
+
+                                return (
+                                  <div 
+                                    key={idx} 
+                                    draggable={true}
+                                    onDragStart={(e) => {
+                                      setDraggedJournalImageIdx(idx);
+                                      e.dataTransfer.effectAllowed = 'move';
+                                    }}
+                                    onDragOver={(e) => e.preventDefault()}
+                                    onDragEnter={(e) => {
+                                      e.preventDefault();
+                                      setDragHoverJournalImageIdx(idx);
+                                    }}
+                                    onDragLeave={() => {
+                                      if (dragHoverJournalImageIdx === idx) setDragHoverJournalImageIdx(null);
+                                    }}
+                                    onDragEnd={() => {
+                                      setDraggedJournalImageIdx(null);
+                                      setDragHoverJournalImageIdx(null);
+                                    }}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      handleDropJournalImage(idx);
+                                    }}
+                                    onClick={(e) => {
+                                      const target = e.target as HTMLElement;
+                                      if (target.closest('button')) return;
+                                      
+                                      if (selectedReorderJournalImageIdx === null) {
+                                        setSelectedReorderJournalImageIdx(idx);
+                                      } else {
+                                        if (selectedReorderJournalImageIdx !== idx) {
+                                          const newImages = [...(editingJournal.images || [])];
+                                          const draggedImg = newImages[selectedReorderJournalImageIdx];
+                                          newImages.splice(selectedReorderJournalImageIdx, 1);
+                                          newImages.splice(idx, 0, draggedImg);
+                                          setEditingJournal({ ...editingJournal, images: newImages });
                                         }
-                                      }}
-                                      muted 
-                                      playsInline 
-                                    />
-                                  ) : (
-                                    <img src={img} className="w-full h-full object-cover" alt="Preview" referrerPolicy="no-referrer" />
-                                  )}
-                                  
-                                  {/* Hover Control Overlay with Reordering and Delete */}
-                                  <div className="absolute inset-0 bg-black/60 flex flex-col justify-between p-1 opacity-0 group-hover/journalmedia:opacity-100 transition-opacity">
-                                    <div className="flex justify-between w-full">
+                                        setSelectedReorderJournalImageIdx(null);
+                                      }
+                                    }}
+                                    className={`relative w-20 h-20 rounded overflow-hidden border bg-stone-200 transition-all duration-250 cursor-grab active:cursor-grabbing group/journalmedia flex flex-col justify-between select-none
+                                      ${isDragged ? 'opacity-30 border-dashed border-sky-400 bg-sky-50 scale-95' : 'border-stone-300'}
+                                      ${isHovered ? 'scale-105 border-double border-2 border-sky-500 shadow-md ring-1 ring-sky-300 z-10' : ''}
+                                      ${isSelected ? 'scale-105 ring-2 ring-[#4A6FA5] border-[#4A6FA5] z-10 shadow-lg' : ''}
+                                      ${!isSelected && hasSelectionInList ? 'hover:border-sky-300 active:scale-102' : ''}
+                                    `}
+                                  >
+                                    {isVideoUrl(img) ? (
+                                      <video 
+                                        src={getPlayableVideoUrl(img)} 
+                                        className="w-full h-full object-cover pointer-events-none" 
+                                        ref={(el) => {
+                                          if (el) {
+                                            el.setAttribute('muted', 'true');
+                                            el.setAttribute('playsinline', 'true');
+                                            el.muted = true;
+                                            el.playsInline = true;
+                                            el.play().catch(() => {});
+                                          }
+                                        }}
+                                        muted 
+                                        playsInline 
+                                      />
+                                    ) : (
+                                      <img src={img} className="w-full h-full object-cover pointer-events-none" alt="Preview" referrerPolicy="no-referrer" />
+                                    )}
+                                    
+                                    {/* Visual Indicator of Move Selection */}
+                                    {isSelected && (
+                                      <div className="absolute inset-0 bg-[#4A6FA5]/25 flex items-center justify-center pointer-events-none">
+                                        <div className="bg-[#4A6FA5] text-white text-[8px] px-1.5 py-0.5 rounded-full font-bold shadow animate-pulse">
+                                          여기 클릭시 이동
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Drag & Drop Visual Indicator overlay when there is any item dragged */}
+                                    {draggedJournalImageIdx !== null && !isDragged && (
+                                      <div className="absolute inset-0 bg-transparent border-dashed border border-sky-400/50 pointer-events-none flex items-center justify-center">
+                                        <div className="text-[7px] text-sky-600 bg-white/95 px-1 rounded shadow-sm">놓기</div>
+                                      </div>
+                                    )}
+
+                                    {/* Hover Control Overlay with Index and Delete */}
+                                    <div className="absolute inset-x-0 bottom-0 bg-black/65 p-1 opacity-0 group-hover/journalmedia:opacity-100 transition-opacity flex justify-between items-center z-10">
+                                      <span className="text-white text-[8px] font-mono font-bold tracking-tighter">#{idx + 1}</span>
                                       <button
                                         type="button"
-                                        disabled={idx === 0}
-                                        onClick={() => {
-                                          const newImages = [...editingJournal.images];
-                                          const temp = newImages[idx];
-                                          newImages[idx] = newImages[idx - 1];
-                                          newImages[idx - 1] = temp;
-                                          setEditingJournal({ ...editingJournal, images: newImages });
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setEditingJournal({
+                                            ...editingJournal,
+                                            images: editingJournal.images.filter((_, i) => i !== idx)
+                                          });
+                                          if (selectedReorderJournalImageIdx === idx) setSelectedReorderJournalImageIdx(null);
                                         }}
-                                        className="text-white disabled:opacity-30 hover:bg-stone-850 bg-black/50 px-1 rounded text-[8px] font-mono cursor-pointer"
-                                        title="앞으로 이동"
+                                        className="bg-red-600 hover:bg-red-700 text-white px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer transition-colors"
                                       >
-                                        ◀
-                                      </button>
-                                      <button
-                                        type="button"
-                                        disabled={idx === editingJournal.images.length - 1}
-                                        onClick={() => {
-                                          const newImages = [...editingJournal.images];
-                                          const temp = newImages[idx];
-                                          newImages[idx] = newImages[idx + 1];
-                                          newImages[idx + 1] = temp;
-                                          setEditingJournal({ ...editingJournal, images: newImages });
-                                        }}
-                                        className="text-white disabled:opacity-30 hover:bg-stone-850 bg-black/50 px-1 rounded text-[8px] font-mono cursor-pointer"
-                                        title="뒤로 이동"
-                                      >
-                                        ▶
+                                        삭제
                                       </button>
                                     </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setEditingJournal({
-                                          ...editingJournal,
-                                          images: editingJournal.images.filter((_, i) => i !== idx)
-                                        });
-                                      }}
-                                      className="bg-red-600 hover:bg-red-700 text-white w-full py-0.5 rounded text-[8px] text-center font-bold tracking-wider cursor-pointer font-sans"
-                                    >
-                                      삭제
-                                    </button>
+                                    
+                                    {/* Permanent index label */}
+                                    <div className="absolute top-1 left-1 bg-black/50 text-white font-mono text-[7px] px-1 rounded z-10">
+                                      #{idx + 1}
+                                    </div>
+
+                                    {/* Permanent Grip handle hint */}
+                                    <div className="absolute top-1 right-1 bg-white/75 text-gray-700 p-0.5 rounded-full shadow-sm cursor-grab group-hover/journalmedia:bg-white transition-colors z-10">
+                                      <svg xmlns="http://www.w3.org/2000/svg" width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-grip-vertical"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></svg>
+                                    </div>
                                   </div>
-                                  <div className="absolute bottom-0 right-0 bg-black/50 text-white font-mono text-[8px] px-1 rounded-tl">
-                                    #{idx + 1}
-                                  </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           </div>
                         )}
@@ -3351,6 +3601,160 @@ export default function App() {
                     ))}
                   </div>
 
+                </div>
+
+                {/* 7. Emotion Portal Keywords */}
+                <div className="bg-white/60 border p-6 rounded animate-fade-in mt-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h4 className="font-serif text-sm tracking-wider font-bold text-[#222222] uppercase">
+                      7. EMOTION PORTAL KEYWORDS ({emotions.length})
+                    </h4>
+                    <button 
+                      onClick={() => {
+                        setIsCreatingNewEmotion(true);
+                        setEditingEmotion({
+                          name: '',
+                          english: '',
+                          description: '',
+                          detail: ''
+                        });
+                      }}
+                      className="bg-[#4A6FA5] text-white font-mono text-[9px] px-2 py-0.5 rounded hover:bg-[#3d5e8c]"
+                    >
+                      + ADD
+                    </button>
+                  </div>
+
+                  {editingEmotion && (
+                    <form onSubmit={handleSaveEmotion} className="bg-[#F2F1EC] p-3 rounded border border-[#222222]/15 mb-4 text-xs flex flex-col gap-2 animate-fade-in">
+                      <h5 className="font-serif text-xs font-bold text-[#4A6FA5] uppercase">
+                        {isCreatingNewEmotion ? '🆕 새 감정 분위기 추가' : '⚙️ 감정 분위기 세부 수정'}
+                      </h5>
+                      <div>
+                        <label className="block font-mono text-[9px] uppercase font-bold">감정 한글 단어 (Name)</label>
+                        <input 
+                          type="text" 
+                          placeholder="예: 그리움, 고요, 푸름..."
+                          value={editingEmotion.name || ''}
+                          onChange={(e) => setEditingEmotion({...editingEmotion, name: e.target.value})}
+                          className="w-full bg-white p-1.5 border border-[#222222]/15 rounded text-xs animate-none font-sans"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-mono text-[9px] uppercase font-bold">영문 레이블 (English)</label>
+                        <input 
+                          type="text" 
+                          placeholder="예: Nostalgia, Serenity, Azure..."
+                          value={editingEmotion.english || ''}
+                          onChange={(e) => setEditingEmotion({...editingEmotion, english: e.target.value})}
+                          className="w-full bg-white p-1.5 border border-[#222222]/15 rounded text-xs font-mono"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-mono text-[9px] uppercase font-bold">메인 목록 서문 (Description - Main Screen)</label>
+                        <textarea 
+                          rows={2}
+                          placeholder="포탈 메인 채널 보드에 보일 한 줄 에세이..."
+                          value={editingEmotion.description || ''}
+                          onChange={(e) => setEditingEmotion({...editingEmotion, description: e.target.value})}
+                          className="w-full bg-white p-1.5 border border-[#222222]/15 rounded text-xs font-serif-ja leading-relaxed"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-mono text-[9px] uppercase font-bold">에세이 필터링 페이지 서문 (Detail Description - Filter Page)</label>
+                        <textarea 
+                          rows={2}
+                          placeholder="해당 감정을 필터링했을 때 상단 헤더에 들어갈 아련한 느낌의 한 줄 에세이..."
+                          value={editingEmotion.detail || ''}
+                          onChange={(e) => setEditingEmotion({...editingEmotion, detail: e.target.value})}
+                          className="w-full bg-white p-1.5 border border-[#222222]/15 rounded text-xs font-serif-ja leading-relaxed"
+                          required
+                        />
+                      </div>
+
+                      <div className="flex gap-2 justify-end mt-2 pt-2 border-t text-right">
+                        <button 
+                          type="button" 
+                          onClick={() => setEditingEmotion(null)} 
+                          className="bg-stone-300 hover:bg-stone-400 p-1 rounded font-mono text-[10px] px-2.5 font-bold cursor-pointer"
+                        >
+                          CANCEL
+                        </button>
+                        <button 
+                          type="submit" 
+                          className="bg-[#4A6FA5] hover:bg-[#3d5e8c] text-white p-1 rounded font-mono text-[10px] px-3 font-bold cursor-pointer animate-none"
+                        >
+                          SAVE &amp; APPLY
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  <div className="flex flex-col gap-2">
+                    {emotions.map((emo, index) => (
+                      <div key={emo.name} className="bg-white border p-2 rounded flex justify-between items-center text-xs animate-fadeIn hover:bg-stone-50 transition-colors">
+                        <div className="flex items-center gap-3">
+                          {/* Reorder Buttons */}
+                          <div className="flex flex-col gap-0.5">
+                            <button 
+                              type="button"
+                              onClick={() => handleMoveEmotionUp(index)}
+                              disabled={index === 0}
+                              className={`p-0.5 border rounded-sm text-[7px] hover:bg-stone-100 flex items-center justify-center h-4 w-4 ${index === 0 ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
+                              title="위로 이동"
+                            >
+                              ▲
+                            </button>
+                            <button 
+                              type="button"
+                              onClick={() => handleMoveEmotionDown(index)}
+                              disabled={index === emotions.length - 1}
+                              className={`p-0.5 border rounded-sm text-[7px] hover:bg-stone-100 flex items-center justify-center h-4 w-4 ${index === emotions.length - 1 ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
+                              title="아래로 이동"
+                            >
+                              ▼
+                            </button>
+                          </div>
+                          <div>
+                            <p className="font-serif-ja font-bold text-[#222222] truncate max-w-[12rem]">{emo.name}</p>
+                            <span className="font-mono text-[9px] text-[#222222]/45 block leading-none mt-0.5">{emo.english}</span>
+                          </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <button 
+                            type="button" 
+                            onClick={() => { 
+                              setEditingEmotion({
+                                originalName: emo.name,
+                                name: emo.name,
+                                english: emo.english,
+                                description: emo.description,
+                                detail: emo.detail
+                              }); 
+                              setIsCreatingNewEmotion(false); 
+                            }}
+                            className="bg-[#4a6fa5]/10 text-[#4a6fa5] hover:bg-[#4a6fa5] hover:text-white px-2 py-0.5 rounded text-[8px] font-mono transition-colors cursor-pointer"
+                          >
+                            EDIT
+                          </button>
+                          <button 
+                            type="button" 
+                            onClick={() => handleDeleteEmotion(emo.name)}
+                            className="bg-red-50 text-red-500 hover:bg-red-500 hover:text-white px-2 py-0.5 rounded text-[8px] font-mono transition-colors cursor-pointer"
+                          >
+                            DEL
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <p className="text-[9.5px] text-[#222222]/40 font-serif leading-relaxed mt-4">
+                    ※ 감정 키워드를 직접 추가/삭제/수정할 수 있습니다. 감정이 수정되거나 삭제될 시, 해당 감정을 사용하던 기존 에세이에도 변경 사항이 안전하게 자동 연쇄 적용(Cascade update/delete)됩니다.
+                  </p>
                 </div>
 
               </div>
