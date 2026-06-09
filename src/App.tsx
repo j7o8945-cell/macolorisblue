@@ -279,6 +279,7 @@ export default function App() {
   const saveEmotionsToStorage = (updatedList: typeof emotions) => {
     setEmotions(updatedList);
     localStorage.setItem('macoloris_emotions', JSON.stringify(updatedList));
+    syncPortfolioWithServer({ emotions: updatedList });
   };
   
   // High performance local video state
@@ -313,6 +314,7 @@ export default function App() {
   const saveCustomTabsToStorage = (newTabs: CustomTab[]) => {
     setCustomTabs(newTabs);
     localStorage.setItem('macoloris_custom_tabs', JSON.stringify(newTabs));
+    syncPortfolioWithServer({ customTabs: newTabs });
   };
 
   const [editingCustomTab, setEditingCustomTab] = useState<Partial<CustomTab> | null>(null);
@@ -368,6 +370,7 @@ export default function App() {
   const saveVisibleSectionsToStorage = (newSections: typeof visibleSections) => {
     setVisibleSections(newSections);
     localStorage.setItem('macoloris_visible_sections', JSON.stringify(newSections));
+    syncPortfolioWithServer({ visibleSections: newSections });
   };
 
   // --- UI Control States ---
@@ -490,95 +493,289 @@ export default function App() {
     setDragHoverJournalImageIdx(null);
   };
 
-  // --- Initialize data from localStorage ---
-  useEffect(() => {
-    const storedWorks = localStorage.getItem('macoloris_works');
-    const storedJournals = localStorage.getItem('macoloris_journals');
-    const storedAbout = localStorage.getItem('macoloris_about');
-    const storedContact = localStorage.getItem('macoloris_contact');
+  // --- Synchronize state with backend disk storage in real-time ---
+  const syncPortfolioWithServer = async (updatedOverride: {
+    works?: Work[];
+    journals?: Journal[];
+    about?: AboutInfo;
+    contact?: ContactInfo;
+    emotions?: typeof emotions;
+    customTabs?: CustomTab[];
+    visibleSections?: typeof visibleSections;
+    videoUrl?: string;
+  } = {}) => {
+    try {
+      const payload = {
+        works: updatedOverride.works !== undefined ? updatedOverride.works : works,
+        journals: updatedOverride.journals !== undefined ? updatedOverride.journals : journals,
+        about: updatedOverride.about !== undefined ? updatedOverride.about : about,
+        contact: updatedOverride.contact !== undefined ? updatedOverride.contact : contact,
+        emotions: updatedOverride.emotions !== undefined ? updatedOverride.emotions : emotions,
+        customTabs: updatedOverride.customTabs !== undefined ? updatedOverride.customTabs : customTabs,
+        visibleSections: updatedOverride.visibleSections !== undefined ? updatedOverride.visibleSections : visibleSections,
+        videoUrl: updatedOverride.videoUrl !== undefined ? updatedOverride.videoUrl : videoUrl
+      };
 
-    if (storedWorks) {
-      setWorks(JSON.parse(storedWorks));
-    } else {
-      setWorks(INITIAL_WORKS);
-      localStorage.setItem('macoloris_works', JSON.stringify(INITIAL_WORKS));
-    }
-
-    if (storedJournals) {
-      setJournals(JSON.parse(storedJournals));
-    } else {
-      setJournals(INITIAL_JOURNALS);
-      localStorage.setItem('macoloris_journals', JSON.stringify(INITIAL_JOURNALS));
-    }
-
-    if (storedAbout) {
-      setAbout(JSON.parse(storedAbout));
-    } else {
-      setAbout(INITIAL_ABOUT);
-      localStorage.setItem('macoloris_about', JSON.stringify(INITIAL_ABOUT));
-    }
-
-    if (storedContact) {
-      const parsedContact = JSON.parse(storedContact);
-      if (parsedContact.email === 'j7o8945@gmail.com') {
-        parsedContact.email = 'fkdlsh74jp@gmail.com';
-        localStorage.setItem('macoloris_contact', JSON.stringify(parsedContact));
+      // Sanitize base64 videos/blobs from payload to keep network payload size small
+      if (payload.videoUrl && (payload.videoUrl.startsWith('data:') || payload.videoUrl.startsWith('blob:') || payload.videoUrl === 'indexeddb_data')) {
+        payload.videoUrl = '';
       }
-      setContact(parsedContact);
-    } else {
-      setContact(INITIAL_CONTACT);
-      localStorage.setItem('macoloris_contact', JSON.stringify(INITIAL_CONTACT));
-    }
 
-    // Load high-performance video from IndexedDB on boot, or load from clean URL
-    const videoSource = localStorage.getItem('macoloris_video_source');
-    if (videoSource === 'indexeddb') {
-      loadVideoFromIndexedDB().then(blob => {
-        if (blob) {
-          // Safari/iOS blocks dynamic blob URL range queries, causing a black screen.
-          // Converting smaller files instantly to Base64 allows Safari's out-of-process renderer to decode and play smoothly.
-          const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-          if (isMobile || blob.size < 12 * 1024 * 1024) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              if (typeof reader.result === 'string') {
-                setVideoUrl(reader.result);
+      await fetch("/api/portfolio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    } catch (err) {
+      console.warn("Could not sync with server db, locally protected:", err);
+    }
+  };
+
+  // --- Export complete portfolio configuration as a backup file ---
+  const handleExportBackup = () => {
+    try {
+      const backupData = {
+        works,
+        journals,
+        about,
+        contact,
+        emotions,
+        customTabs,
+        visibleSections,
+        videoUrl: videoUrl === 'indexeddb_data' ? '' : videoUrl
+      };
+      
+      const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `macoloris_portfolio_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("백업 파일 내보내기 중 오류가 발생했습니다: " + err);
+    }
+  };
+
+  // --- Import portfolio configuration from a backup file ---
+  const handleImportBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
+    try {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const raw = event.target?.result as string;
+          const data = JSON.parse(raw);
+          
+          if (data.works) {
+            setWorks(data.works);
+            localStorage.setItem('macoloris_works', JSON.stringify(data.works));
+          }
+          if (data.journals) {
+            setJournals(data.journals);
+            localStorage.setItem('macoloris_journals', JSON.stringify(data.journals));
+          }
+          if (data.about) {
+            setAbout(data.about);
+            localStorage.setItem('macoloris_about', JSON.stringify(data.about));
+          }
+          if (data.contact) {
+            setContact(data.contact);
+            localStorage.setItem('macoloris_contact', JSON.stringify(data.contact));
+          }
+          if (data.emotions) {
+            setEmotions(data.emotions);
+            localStorage.setItem('macoloris_emotions', JSON.stringify(data.emotions));
+          }
+          if (data.customTabs) {
+            setCustomTabs(data.customTabs);
+            localStorage.setItem('macoloris_custom_tabs', JSON.stringify(data.customTabs));
+          }
+          if (data.visibleSections) {
+            setVisibleSections(data.visibleSections);
+            localStorage.setItem('macoloris_visible_sections', JSON.stringify(data.visibleSections));
+          }
+          if (data.videoUrl) {
+            setVideoUrl(data.videoUrl);
+            localStorage.setItem('macoloris_video_url', data.videoUrl);
+            localStorage.setItem('macoloris_video_source', 'url');
+          }
+          
+          // Sync with server as well
+          await fetch("/api/portfolio", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(data)
+          });
+          
+          alert("✨ 백업 정보 복원이 완료되었습니다! 기기 간 데이터 통합이 완료되었습니다.");
+          window.location.reload();
+        } catch (err) {
+          alert("파일 해석에 실패했습니다. 올바른 포맷의 백업 JSON 파일인지 확인하십시오.");
+        }
+      };
+      reader.readAsText(file);
+    } catch (err) {
+      alert("백업 파일 가져오기 실패: " + err);
+    }
+  };
+
+  // --- Initialize data from Server database first, with local fallback ---
+  useEffect(() => {
+    const initializePortfolio = async () => {
+      let serverData: any = null;
+      try {
+        const res = await fetch("/api/portfolio");
+        if (res.ok) {
+          const parsed = await res.json();
+          if (parsed && parsed.status !== "none") {
+            serverData = parsed;
+          }
+        }
+      } catch (err) {
+        console.warn("Server-side db loading failed, applying offline local memory fallback:", err);
+      }
+
+      // 1. Works
+      if (serverData?.works) {
+        setWorks(serverData.works);
+        localStorage.setItem('macoloris_works', JSON.stringify(serverData.works));
+      } else {
+        const storedWorks = localStorage.getItem('macoloris_works');
+        if (storedWorks) {
+          setWorks(JSON.parse(storedWorks));
+        } else {
+          setWorks(INITIAL_WORKS);
+          localStorage.setItem('macoloris_works', JSON.stringify(INITIAL_WORKS));
+        }
+      }
+
+      // 2. Journals
+      if (serverData?.journals) {
+        setJournals(serverData.journals);
+        localStorage.setItem('macoloris_journals', JSON.stringify(serverData.journals));
+      } else {
+        const storedJournals = localStorage.getItem('macoloris_journals');
+        if (storedJournals) {
+          setJournals(JSON.parse(storedJournals));
+        } else {
+          setJournals(INITIAL_JOURNALS);
+          localStorage.setItem('macoloris_journals', JSON.stringify(INITIAL_JOURNALS));
+        }
+      }
+
+      // 3. About
+      if (serverData?.about) {
+        setAbout(serverData.about);
+        localStorage.setItem('macoloris_about', JSON.stringify(serverData.about));
+      } else {
+        const storedAbout = localStorage.getItem('macoloris_about');
+        if (storedAbout) {
+          setAbout(JSON.parse(storedAbout));
+        } else {
+          setAbout(INITIAL_ABOUT);
+          localStorage.setItem('macoloris_about', JSON.stringify(INITIAL_ABOUT));
+        }
+      }
+
+      // 4. Contact
+      if (serverData?.contact) {
+        setContact(serverData.contact);
+        localStorage.setItem('macoloris_contact', JSON.stringify(serverData.contact));
+      } else {
+        const storedContact = localStorage.getItem('macoloris_contact');
+        if (storedContact) {
+          const parsedContact = JSON.parse(storedContact);
+          if (parsedContact.email === 'j7o8945@gmail.com') {
+            parsedContact.email = 'fkdlsh74jp@gmail.com';
+            localStorage.setItem('macoloris_contact', JSON.stringify(parsedContact));
+          }
+          setContact(parsedContact);
+        } else {
+          setContact(INITIAL_CONTACT);
+          localStorage.setItem('macoloris_contact', JSON.stringify(INITIAL_CONTACT));
+        }
+      }
+
+      // 5. Emotions
+      if (serverData?.emotions) {
+        setEmotions(serverData.emotions);
+        localStorage.setItem('macoloris_emotions', JSON.stringify(serverData.emotions));
+      }
+
+      // 6. CustomTabs
+      if (serverData?.customTabs) {
+        setCustomTabs(serverData.customTabs);
+        localStorage.setItem('macoloris_custom_tabs', JSON.stringify(serverData.customTabs));
+      }
+
+      // 7. Visible Sections
+      if (serverData?.visibleSections) {
+        setVisibleSections(serverData.visibleSections);
+        localStorage.setItem('macoloris_visible_sections', JSON.stringify(serverData.visibleSections));
+      }
+
+      // 8. Video load logic
+      let finalVideoUrl = DEFAULT_VIDEO_URL;
+      if (serverData?.videoUrl && serverData.videoUrl !== 'indexeddb_data') {
+        finalVideoUrl = serverData.videoUrl;
+        setVideoUrl(serverData.videoUrl);
+        localStorage.setItem('macoloris_video_url', serverData.videoUrl);
+        localStorage.setItem('macoloris_video_source', 'url');
+        setIsVideoReady(true);
+      } else {
+        const videoSource = localStorage.getItem('macoloris_video_source');
+        if (videoSource === 'indexeddb') {
+          loadVideoFromIndexedDB().then(blob => {
+            if (blob) {
+              const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+              if (isMobile || blob.size < 12 * 1024 * 1024) {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                  if (typeof reader.result === 'string') {
+                    setVideoUrl(reader.result);
+                    setIsVideoReady(true);
+                  }
+                };
+                reader.readAsDataURL(blob);
+              } else {
+                const objUrl = URL.createObjectURL(blob);
+                setVideoUrl(objUrl);
                 setIsVideoReady(true);
               }
-            };
-            reader.readAsDataURL(blob);
-          } else {
-            const objUrl = URL.createObjectURL(blob);
-            setVideoUrl(objUrl);
+            } else {
+              const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
+              if (savedUrl === 'indexeddb_data' || savedUrl === 'video.mp4' || savedUrl.includes('mixkit.co')) {
+                setVideoUrl(DEFAULT_VIDEO_URL);
+                localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
+              } else {
+                setVideoUrl(savedUrl);
+              }
+              setIsVideoReady(true);
+            }
+          }).catch(err => {
+            console.error("IndexedDB load failed, falling back to default:", err);
+            setVideoUrl(DEFAULT_VIDEO_URL);
             setIsVideoReady(true);
-          }
+          });
         } else {
-          // fallback
           const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
-          if (savedUrl === 'indexeddb_data' || savedUrl === 'video.mp4' || savedUrl.includes('mixkit.co')) {
+          if (savedUrl && !savedUrl.startsWith('data:') && !savedUrl.startsWith('blob:') && savedUrl !== 'indexeddb_data' && savedUrl !== 'video.mp4' && !savedUrl.includes('mixkit.co')) {
+            setVideoUrl(savedUrl);
+          } else {
             setVideoUrl(DEFAULT_VIDEO_URL);
             localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
-          } else {
-            setVideoUrl(savedUrl);
           }
           setIsVideoReady(true);
         }
-      }).catch(err => {
-        console.error("IndexedDB load failed:", err);
-        setVideoUrl(DEFAULT_VIDEO_URL);
-        setIsVideoReady(true);
-      });
-    } else {
-      const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
-      if (savedUrl && !savedUrl.startsWith('data:') && !savedUrl.startsWith('blob:') && savedUrl !== 'indexeddb_data' && savedUrl !== 'video.mp4' && !savedUrl.includes('mixkit.co')) {
-        setVideoUrl(savedUrl);
-      } else {
-        // Clear any old, lag-inducing Base64 or blocked video strings to instantly restore premium performance
-        setVideoUrl(DEFAULT_VIDEO_URL);
-        localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
       }
-      setIsVideoReady(true);
-    }
+    };
+
+    initializePortfolio();
   }, []);
 
   // Sync body background color with entry state to prevent any white gap, scroll borders, or page cuts during intro
@@ -687,6 +884,14 @@ export default function App() {
       // 4. Save Visible Sections
       setVisibleSections({ ...tempVisibleSections });
       localStorage.setItem('macoloris_visible_sections', JSON.stringify(tempVisibleSections));
+
+      // Synchronize all settings directly with the server database
+      await syncPortfolioWithServer({
+        about: tempAbout,
+        contact: tempContact,
+        visibleSections: tempVisibleSections,
+        videoUrl: tempVideoFile ? 'indexeddb_data' : tempVideoUrl
+      });
       
       // 5. Show save complete message
       setSettingsSavedMessage('✨ 모든 기본 설정과 인트로 영상이 정상적으로 저장되었습니다!');
@@ -699,6 +904,7 @@ export default function App() {
     setWorks(newWorks);
     try {
       localStorage.setItem('macoloris_works', JSON.stringify(newWorks));
+      syncPortfolioWithServer({ works: newWorks });
     } catch (e: any) {
       if (e.name === 'QuotaExceededError' || e.code === 22) {
         alert("⚠️ 브라우저의 저장 용량 한도(5MB~10MB)를 초과하여 게시물이 로컬에 저장되지 못했습니다. 새로 추가하시려는 동영상/이미지 파일의 용량이 너무 큽니다. 모바일 및 웹에서의 쾌적한 재생을 위해 5MB 이하 수준으로 압축된 MP4(동영상) 또는 JPEG(사진) 파일을 업로드하는 것을 절대 권장합니다.");
@@ -712,6 +918,7 @@ export default function App() {
     setJournals(newJournals);
     try {
       localStorage.setItem('macoloris_journals', JSON.stringify(newJournals));
+      syncPortfolioWithServer({ journals: newJournals });
     } catch (e: any) {
       if (e.name === 'QuotaExceededError' || e.code === 22) {
         alert("⚠️ 브라우저의 저장 용량 한도(5MB~10MB)를 초과하여 저널이 로컬에 저장되지 못했습니다. 동영상/이미지 파일의 해상도나 용량을 약간 줄여서 압축된 파일로 재업로드하십시오.");
@@ -724,16 +931,19 @@ export default function App() {
   const saveAboutToStorage = (newAbout: AboutInfo) => {
     setAbout(newAbout);
     localStorage.setItem('macoloris_about', JSON.stringify(newAbout));
+    syncPortfolioWithServer({ about: newAbout });
   };
 
   const saveContactToStorage = (newContact: ContactInfo) => {
     setContact(newContact);
     localStorage.setItem('macoloris_contact', JSON.stringify(newContact));
+    syncPortfolioWithServer({ contact: newContact });
   };
 
   const saveVideoUrlToStorage = (url: string) => {
     setVideoUrl(url);
     localStorage.setItem('macoloris_video_url', url);
+    syncPortfolioWithServer({ videoUrl: url });
   };
 
   const handleSaveCustomTab = (e: React.FormEvent) => {
@@ -1086,7 +1296,10 @@ export default function App() {
   // If before first entrance, render full screen video cover exactly as requested
   if (!hasEntered) {
     return (
-      <div className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden">
+      <div 
+        className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] bg-cover bg-center bg-no-repeat text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden"
+        style={{ backgroundImage: "url('/src/assets/images/home_hero_1780643011034.png')" }}
+      >
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden">
           {isVideoReady && (
@@ -1103,6 +1316,7 @@ export default function App() {
               }}
               key={videoUrl}
               src={getPlayableVideoUrl(videoUrl)}
+              poster="/src/assets/images/home_hero_1780643011034.png"
               autoPlay 
               loop 
               muted 
@@ -3087,6 +3301,34 @@ export default function App() {
                           {settingsSavedMessage}
                         </div>
                       )}
+
+                      {/* premium backup and sync control module */}
+                      <div className="mt-4 pt-3 border-t border-[#4A6FA5]/20">
+                        <span className="block font-mono text-[9px] text-[#4A6FA5] font-bold uppercase tracking-wider mb-1">📲 모바일/기기 간 포트폴리오 백업 가공기 (Data Migration)</span>
+                        <p className="text-[9px] text-stone-500 font-sans mb-3">
+                          모든 기기(PC, 휴대폰)에 글과 순서가 <strong>실시간 클라우드 동기화</strong>되나, 물리적인 백업 복제를 원하는 경우 아래 백업 다운로드 및 모바일에서 파일 불러오기를 수행하면 원클릭 완벽 통합됩니다.
+                        </p>
+                        
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={handleExportBackup}
+                            className="bg-stone-100 hover:bg-stone-200 text-stone-700 py-2 px-3 rounded font-mono text-[9.5px] font-bold tracking-wider transition-colors flex items-center justify-center gap-1.5 cursor-pointer border border-stone-200"
+                          >
+                            📥 백업 받기 (Export)
+                          </button>
+                          
+                          <label className="bg-[#4A6FA5]/10 hover:bg-[#4A6FA5]/20 text-[#4A6FA5] py-2 px-3 rounded font-mono text-[9.5px] font-bold tracking-wider transition-colors flex items-center justify-center gap-1.5 cursor-pointer border border-[#4A6FA5]/20 text-center">
+                            📤 백업 적용 (Import)
+                            <input
+                              type="file"
+                              accept=".json"
+                              onChange={handleImportBackup}
+                              className="hidden"
+                            />
+                          </label>
+                        </div>
+                      </div>
                     </div>
                     {/* 나만의 커스텀 탭 메뉴 제어 (Custom Tabs Manager) */}
                     <div className="border-t border-black/5 pt-3 mt-3">
