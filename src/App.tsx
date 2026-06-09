@@ -168,6 +168,38 @@ const compressImageFile = (file: File, maxW = 1200, maxH = 1200, quality = 0.75)
   });
 };
 
+const DEFAULT_VIDEO_URL = 'https://assets.mixkit.co/videos/preview/mixkit-tokyo-street-strolls-at-night-with-neon-lights-43950-large.mp4';
+
+const blobUrlCache = new Map<string, string>();
+
+const getPlayableVideoUrl = (url: string): string => {
+  if (!url) return '';
+  if (url === 'video.mp4') return DEFAULT_VIDEO_URL;
+  if (!url.startsWith('data:video/')) return url;
+  
+  const cached = blobUrlCache.get(url);
+  if (cached) return cached;
+  
+  try {
+    const parts = url.split(',');
+    if (parts.length < 2) return url;
+    const mime = parts[0].match(/:(.*?);/)?.[1] || 'video/mp4';
+    const bstr = atob(parts[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n);
+    }
+    const blob = new Blob([u8arr], { type: mime });
+    const blobUrl = URL.createObjectURL(blob);
+    blobUrlCache.set(url, blobUrl);
+    return blobUrl;
+  } catch (e) {
+    console.error("Failed to convert data URL to Blob URL:", e);
+    return url;
+  }
+};
+
 const isVideoUrl = (url: string): boolean => {
   if (!url) return false;
   if (url.includes('#video')) return true;
@@ -289,7 +321,7 @@ export default function App() {
     return false;
   });
   const [videoUrl, setVideoUrl] = useState<string>(() => {
-    return localStorage.getItem('macoloris_video_url') || 'video.mp4';
+    return localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
   });
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
     const saved = localStorage.getItem('macoloris_visible_sections');
@@ -421,18 +453,18 @@ export default function App() {
           }
         } else {
           // fallback
-          const savedUrl = localStorage.getItem('macoloris_video_url') || 'video.mp4';
+          const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
           setVideoUrl(savedUrl);
         }
       });
     } else {
-      const savedUrl = localStorage.getItem('macoloris_video_url') || 'video.mp4';
+      const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
       if (savedUrl && !savedUrl.startsWith('data:') && !savedUrl.startsWith('blob:')) {
         setVideoUrl(savedUrl);
       } else {
         // Clear any old, lag-inducing Base64 video strings to instantly restore premium performance
-        setVideoUrl('video.mp4');
-        localStorage.setItem('macoloris_video_url', 'video.mp4');
+        setVideoUrl(DEFAULT_VIDEO_URL);
+        localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
       }
     }
   }, []);
@@ -541,8 +573,8 @@ export default function App() {
       } else {
         // Keeping current settings, if base64 exists by accident inside state, clean it
         if (tempVideoUrl.startsWith('data:')) {
-          setVideoUrl('video.mp4');
-          localStorage.setItem('macoloris_video_url', 'video.mp4');
+          setVideoUrl(DEFAULT_VIDEO_URL);
+          localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
           localStorage.setItem('macoloris_video_source', 'url');
         }
       }
@@ -850,9 +882,18 @@ export default function App() {
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden">
           <video 
-            ref={videoRef}
+            ref={(el) => {
+              (videoRef as any).current = el;
+              if (el) {
+                el.setAttribute('muted', 'true');
+                el.setAttribute('playsinline', 'true');
+                el.muted = true;
+                el.playsInline = true;
+                el.play().catch(() => {});
+              }
+            }}
             key={videoUrl}
-            src={videoUrl}
+            src={getPlayableVideoUrl(videoUrl)}
             autoPlay 
             loop 
             muted 
@@ -1390,7 +1431,16 @@ export default function App() {
                         {isVideoUrl(work.images[0] || '') ? (
                           <video 
                             key={work.images[0]}
-                            src={work.images[0]} 
+                            ref={(el) => {
+                              if (el) {
+                                el.setAttribute('muted', 'true');
+                                el.setAttribute('playsinline', 'true');
+                                el.muted = true;
+                                el.playsInline = true;
+                                el.play().catch(() => {});
+                              }
+                            }}
+                            src={getPlayableVideoUrl(work.images[0])} 
                             autoPlay 
                             loop 
                             muted 
@@ -1477,7 +1527,16 @@ export default function App() {
                 {isVideoUrl(activeWorkDetail.images[activePhotoIndex] || '') ? (
                   <video 
                     key={activeWorkDetail.images[activePhotoIndex]}
-                    src={activeWorkDetail.images[activePhotoIndex]} 
+                    ref={(el) => {
+                      if (el) {
+                        el.setAttribute('muted', 'true');
+                        el.setAttribute('playsinline', 'true');
+                        el.muted = true;
+                        el.playsInline = true;
+                        el.play().catch(() => {});
+                      }
+                    }}
+                    src={getPlayableVideoUrl(activeWorkDetail.images[activePhotoIndex])} 
                     autoPlay 
                     loop 
                     muted 
@@ -1592,7 +1651,16 @@ export default function App() {
                       {isVideoUrl(work.images[0] || '') ? (
                         <video 
                           key={work.images[0]}
-                          src={work.images[0]} 
+                          ref={(el) => {
+                            if (el) {
+                              el.setAttribute('muted', 'true');
+                              el.setAttribute('playsinline', 'true');
+                              el.muted = true;
+                              el.playsInline = true;
+                              el.play().catch(() => {});
+                            }
+                          }}
+                          src={getPlayableVideoUrl(work.images[0])} 
                           autoPlay 
                           loop 
                           muted 
@@ -1795,7 +1863,16 @@ export default function App() {
                               {isVideoUrl(matchingWork.images[0] || '') ? (
                                 <video 
                                   key={matchingWork.images[0]}
-                                  src={matchingWork.images[0]} 
+                                  ref={(el) => {
+                                    if (el) {
+                                      el.setAttribute('muted', 'true');
+                                      el.setAttribute('playsinline', 'true');
+                                      el.muted = true;
+                                      el.playsInline = true;
+                                      el.play().catch(() => {});
+                                    }
+                                  }}
+                                  src={getPlayableVideoUrl(matchingWork.images[0])} 
                                   autoPlay 
                                   loop 
                                   muted 
@@ -1881,7 +1958,16 @@ export default function App() {
                           {isVideoUrl(imgUrl) ? (
                             <video 
                               key={imgUrl}
-                              src={imgUrl} 
+                              ref={(el) => {
+                                if (el) {
+                                  el.setAttribute('muted', 'true');
+                                  el.setAttribute('playsinline', 'true');
+                                  el.muted = true;
+                                  el.playsInline = true;
+                                  el.play().catch(() => {});
+                                }
+                              }}
+                              src={getPlayableVideoUrl(imgUrl)} 
                               autoPlay 
                               loop 
                               muted 
@@ -2252,7 +2338,21 @@ export default function App() {
                               {editingWork.images.map((img, idx) => (
                                 <div key={idx} className="relative w-16 h-16 rounded overflow-hidden border bg-stone-200 group/workmedia flex flex-col justify-between">
                                   {isVideoUrl(img) ? (
-                                    <video src={img} className="w-full h-full object-cover" muted playsInline />
+                                    <video 
+                                      src={getPlayableVideoUrl(img)} 
+                                      className="w-full h-full object-cover" 
+                                      ref={(el) => {
+                                        if (el) {
+                                          el.setAttribute('muted', 'true');
+                                          el.setAttribute('playsinline', 'true');
+                                          el.muted = true;
+                                          el.playsInline = true;
+                                          el.play().catch(() => {});
+                                        }
+                                      }}
+                                      muted 
+                                      playsInline 
+                                    />
                                   ) : (
                                     <img src={img} className="w-full h-full object-cover" alt="Preview" referrerPolicy="no-referrer" />
                                   )}
@@ -2384,8 +2484,17 @@ export default function App() {
 
                         {isVideoUrl(work.images[0] || '') ? (
                           <video 
-                            src={work.images[0]} 
+                            src={getPlayableVideoUrl(work.images[0])} 
                             className="w-12 h-10 object-cover rounded shadow-3xs" 
+                            ref={(el) => {
+                              if (el) {
+                                el.setAttribute('muted', 'true');
+                                el.setAttribute('playsinline', 'true');
+                                el.muted = true;
+                                el.playsInline = true;
+                                el.play().catch(() => {});
+                              }
+                            }}
                             muted
                             playsInline
                           />
@@ -3109,7 +3218,21 @@ export default function App() {
                               {editingJournal.images.map((img, idx) => (
                                 <div key={idx} className="relative w-16 h-16 rounded overflow-hidden border bg-stone-200 group/journalmedia flex flex-col justify-between">
                                   {isVideoUrl(img) ? (
-                                    <video src={img} className="w-full h-full object-cover" muted playsInline />
+                                    <video 
+                                      src={getPlayableVideoUrl(img)} 
+                                      className="w-full h-full object-cover" 
+                                      ref={(el) => {
+                                        if (el) {
+                                          el.setAttribute('muted', 'true');
+                                          el.setAttribute('playsinline', 'true');
+                                          el.muted = true;
+                                          el.playsInline = true;
+                                          el.play().catch(() => {});
+                                        }
+                                      }}
+                                      muted 
+                                      playsInline 
+                                    />
                                   ) : (
                                     <img src={img} className="w-full h-full object-cover" alt="Preview" referrerPolicy="no-referrer" />
                                   )}
