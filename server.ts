@@ -22,6 +22,7 @@ async function startServer() {
   // API: Retrieve globally synchronized portfolio state
   app.get("/api/portfolio", (req, res) => {
     try {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
       if (fs.existsSync(DB_PATH)) {
         const raw = fs.readFileSync(DB_PATH, 'utf-8');
         return res.json(JSON.parse(raw));
@@ -33,12 +34,35 @@ async function startServer() {
     }
   });
 
-  // API: Save globally synchronized portfolio state
+  // API: Save/Merge globally synchronized portfolio state (Partial update support)
   app.post("/api/portfolio", (req, res) => {
     try {
       const data = req.body;
-      fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2), 'utf-8');
-      return res.json({ status: "success", message: "Portfolio successfully saved to server disk!" });
+      let existing: any = {};
+      if (fs.existsSync(DB_PATH)) {
+        try {
+          const raw = fs.readFileSync(DB_PATH, 'utf-8');
+          existing = JSON.parse(raw);
+          if (existing && existing.status === "none") {
+            existing = {};
+          }
+        } catch (e) {
+          existing = {};
+        }
+      }
+
+      // Merge new data with existing file content
+      const merged = {
+        ...existing,
+        ...data
+      };
+      
+      // Clean up dynamic status fields
+      if (merged.status) delete merged.status;
+      if (merged.message) delete merged.message;
+
+      fs.writeFileSync(DB_PATH, JSON.stringify(merged, null, 2), 'utf-8');
+      return res.json({ status: "success", message: "Portfolio successfully merged and saved to server disk!" });
     } catch (e: any) {
       console.error("Failed to persist portfolio state sever-side:", e);
       return res.status(500).json({ error: e.message || "Internal Server Error" });
@@ -138,6 +162,9 @@ async function startServer() {
     }
     next();
   });
+
+  // Serve static assets from /src/assets directly in both DEV and PROD to bypass SPA wildcard fallback
+  app.use('/src/assets', express.static(path.join(process.cwd(), 'src', 'assets')));
 
   // Hot Module Replacement (HMR) and development asset pipeline vs. Production Static pipeline
   if (process.env.NODE_ENV !== "production") {

@@ -243,6 +243,7 @@ export default function App() {
   const [journals, setJournals] = useState<Journal[]>([]);
   const [about, setAbout] = useState<AboutInfo>(INITIAL_ABOUT);
   const [contact, setContact] = useState<ContactInfo>(INITIAL_CONTACT);
+  const [isInitialized, setIsInitialized] = useState<boolean>(false);
   
   // --- Persistent Emotion States ---
   const [emotions, setEmotions] = useState<{ name: string; english: string; description: string; detail: string }[]>(() => {
@@ -498,7 +499,7 @@ export default function App() {
     setDragHoverJournalImageIdx(null);
   };
 
-  // --- Synchronize state with backend disk storage in real-time ---
+  // --- Synchronize state with backend disk storage in real-time (Safe Partial Upload) ---
   const syncPortfolioWithServer = async (updatedOverride: {
     works?: Work[];
     journals?: Journal[];
@@ -510,21 +511,28 @@ export default function App() {
     videoUrl?: string;
   } = {}) => {
     try {
-      const payload = {
-        works: updatedOverride.works !== undefined ? updatedOverride.works : works,
-        journals: updatedOverride.journals !== undefined ? updatedOverride.journals : journals,
-        about: updatedOverride.about !== undefined ? updatedOverride.about : about,
-        contact: updatedOverride.contact !== undefined ? updatedOverride.contact : contact,
-        emotions: updatedOverride.emotions !== undefined ? updatedOverride.emotions : emotions,
-        customTabs: updatedOverride.customTabs !== undefined ? updatedOverride.customTabs : customTabs,
-        visibleSections: updatedOverride.visibleSections !== undefined ? updatedOverride.visibleSections : visibleSections,
-        videoUrl: updatedOverride.videoUrl !== undefined ? updatedOverride.videoUrl : videoUrl
-      };
-
-      // Sanitize base64 videos/blobs from payload to keep network payload size small
-      if (payload.videoUrl && (payload.videoUrl.startsWith('data:') || payload.videoUrl.startsWith('blob:') || payload.videoUrl === 'indexeddb_data')) {
-        payload.videoUrl = '';
+      // Build a payload with ONLY the fields that are actually being changed.
+      // This allows the Express server to perform a safe merge/patch, preventing stale client states
+      // from overwriting other active database tables/fields!
+      const payload: any = {};
+      if (updatedOverride.works !== undefined) payload.works = updatedOverride.works;
+      if (updatedOverride.journals !== undefined) payload.journals = updatedOverride.journals;
+      if (updatedOverride.about !== undefined) payload.about = updatedOverride.about;
+      if (updatedOverride.contact !== undefined) payload.contact = updatedOverride.contact;
+      if (updatedOverride.emotions !== undefined) payload.emotions = updatedOverride.emotions;
+      if (updatedOverride.customTabs !== undefined) payload.customTabs = updatedOverride.customTabs;
+      if (updatedOverride.visibleSections !== undefined) payload.visibleSections = updatedOverride.visibleSections;
+      
+      if (updatedOverride.videoUrl !== undefined) {
+        let vUrl = updatedOverride.videoUrl;
+        if (vUrl && (vUrl.startsWith('data:') || vUrl.startsWith('blob:') || vUrl === 'indexeddb_data')) {
+          vUrl = '';
+        }
+        payload.videoUrl = vUrl;
       }
+
+      // Do nothing if payload is empty to prevent blank network requests
+      if (Object.keys(payload).length === 0) return;
 
       await fetch("/api/portfolio", {
         method: "POST",
@@ -634,7 +642,8 @@ export default function App() {
     const initializePortfolio = async () => {
       let serverData: any = null;
       try {
-        const res = await fetch("/api/portfolio");
+        // Enforce cache-busting to prevent aggressive iOS/mobile Safari caching of the JSON DB
+        const res = await fetch(`/api/portfolio?t=${Date.now()}`);
         if (res.ok) {
           const parsed = await res.json();
           if (parsed && parsed.status !== "none") {
@@ -778,6 +787,7 @@ export default function App() {
           setIsVideoReady(true);
         }
       }
+      setIsInitialized(true);
     };
 
     initializePortfolio();
@@ -805,6 +815,13 @@ export default function App() {
     video.playsInline = true;
     video.setAttribute('muted', '');
     video.setAttribute('playsinline', '');
+
+    // Explicitly load the video source structure for iOS Safari stability
+    try {
+      video.load();
+    } catch (e) {
+      console.warn("video.load() was interrupted:", e);
+    }
 
     const playVideo = () => {
       const playPromise = video.play();
@@ -849,6 +866,7 @@ export default function App() {
 
   // --- Periodic polling to synchronise changes across all devices in real-time ---
   useEffect(() => {
+    if (!isInitialized) return;
     let active = true;
     const pollInterval = setInterval(async () => {
       // Skip if active editing is underway to avoid interrupting the admin's workflow
@@ -857,7 +875,8 @@ export default function App() {
       }
       
       try {
-        const res = await fetch("/api/portfolio");
+        // Enforce cache-busting to prevent aggressive iOS/mobile Safari caching of the JSON DB
+        const res = await fetch(`/api/portfolio?t=${Date.now()}`);
         if (res.ok && active) {
           const parsed = await res.json();
           if (parsed && parsed.status !== "none") {
@@ -907,7 +926,7 @@ export default function App() {
       active = false;
       clearInterval(pollInterval);
     };
-  }, [works, journals, about, contact, emotions, customTabs, visibleSections, videoUrl, editingWork, editingJournal]);
+  }, [works, journals, about, contact, emotions, customTabs, visibleSections, videoUrl, editingWork, editingJournal, isInitialized]);
 
   // --- Admin settings sync workspace ---
   useEffect(() => {
@@ -2047,7 +2066,7 @@ export default function App() {
                 onClick={() => {
                   setActivePhotoIndex((prev) => (prev + 1) % activeWorkDetail.images.length);
                 }}
-                className="cursor-pointer max-w-full max-h-[66vh] overflow-hidden bg-[#E8E7E2]/15 border border-black/[0.015] rounded-[1.5px] transition-all duration-300 transform hover:brightness-102"
+                className="cursor-pointer w-full max-w-full md:max-w-3xl max-h-[66vh] overflow-hidden bg-[#E8E7E2]/15 border border-black/[0.015] rounded-[1.5px] transition-all duration-300 transform hover:brightness-102 flex justify-center items-center"
               >
                 {isVideoUrl(activeWorkDetail.images[activePhotoIndex] || '') ? (
                   <video 
@@ -2066,13 +2085,13 @@ export default function App() {
                     loop 
                     muted 
                     playsInline 
-                    className="max-h-[64vh] max-w-full w-auto object-contain mx-auto shadow-2xs"
+                    className="w-full h-auto max-h-[50vh] md:max-h-[64vh] md:w-auto object-contain mx-auto shadow-2xs"
                   />
                 ) : (
                   <img 
                     src={activeWorkDetail.images[activePhotoIndex] || PHOTO_PRESETS[0].url} 
                     alt={`${activeWorkDetail.title} - ${activePhotoIndex + 1}`} 
-                    className="max-h-[64vh] max-w-full w-auto object-contain mx-auto shadow-2xs"
+                    className="w-full h-auto max-h-[50vh] md:max-h-[64vh] md:w-auto object-contain mx-auto shadow-2xs"
                     referrerPolicy="no-referrer"
                   />
                 )}
