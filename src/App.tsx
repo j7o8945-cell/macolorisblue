@@ -129,79 +129,140 @@ const deleteVideoFromIndexedDB = (): Promise<void> => {
   });
 };
 
-const compressImageFile = (file: File, maxW = 2048, maxH = 2048, quality = 0.92): Promise<string> => {
-  return new Promise((resolve) => {
-    // 만약 파일 크기가 아주 작고 이미 최적화된 상태라면 (< 400KB), Canvas 스케일링을 거치지 않고 원본 화질 그대로 data URL로 읽어들여 원본 화질을 상실 없이 완벽히 유지합니다.
-    if (file.size < 400 * 1024) {
+let heic2anyLoadingPromise: Promise<any> | null = null;
+const loadHeic2Any = (): Promise<any> => {
+  if ((window as any).heic2any) return Promise.resolve((window as any).heic2any);
+  if (heic2anyLoadingPromise) return heic2anyLoadingPromise;
+  
+  heic2anyLoadingPromise = new Promise((resolve) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js';
+    script.async = true;
+    script.onload = () => {
+      resolve((window as any).heic2any);
+    };
+    script.onerror = () => {
+      heic2anyLoadingPromise = null;
+      resolve(null);
+    };
+    document.head.appendChild(script);
+  });
+  return heic2anyLoadingPromise;
+};
+
+const convertHeicToJpg = async (file: File): Promise<File> => {
+  const nameLower = file.name.toLowerCase();
+  if (nameLower.endsWith('.heic') || nameLower.endsWith('.heif') || file.type.includes('heic') || file.type.includes('heif')) {
+    try {
+      const heic2any = await loadHeic2Any();
+      if (!heic2any) return file;
+      
+      const converted = await heic2any({
+        blob: file,
+        toType: 'image/jpeg',
+        quality: 0.90
+      });
+      const singleBlob = Array.isArray(converted) ? converted[0] : converted;
+      return new File([singleBlob], file.name.replace(/\.[^/.]+$/, "") + ".jpg", {
+        type: 'image/jpeg'
+      });
+    } catch (err) {
+      console.error("HEIC conversion error:", err);
+      return file;
+    }
+  }
+  return file;
+};
+
+const compressImageFile = async (file: File, maxW = 3200, maxH = 3200, quality = 0.88): Promise<string> => {
+  try {
+    // 1단계: HEIC/HEIF라면 웹 친화형 JPG로 백그라운드 자동 변환
+    const processedFile = await convertHeicToJpg(file);
+    
+    // 2단계: 최상급 보정 퀄리티를 유지하면서 브라우저 렉 없이 스무스하게 최적화
+    return new Promise((resolve) => {
+      // 아주 작고 이미 최적화된 파일은 그대로 Data URL 변환하여 연산 낭비 최소화
+      if (processedFile.size < 350 * 1024) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          resolve(e.target?.result as string || '');
+        };
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(processedFile);
+        return;
+      }
+
       const reader = new FileReader();
       reader.onload = (e) => {
-        resolve(e.target?.result as string || '');
-      };
-      reader.onerror = () => resolve('');
-      reader.readAsDataURL(file);
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-        
-        // 고해상도 경계를 초과하는 경우에만 비율 유지하여 스케일 다운
-        if (width > height) {
-          if (width > maxW) {
-            height = Math.round((height * maxW) / width);
-            width = maxW;
-          }
-        } else {
-          if (height > maxH) {
-            width = Math.round((width * maxH) / height);
-            height = maxH;
-          }
-        }
-        
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          // 브라우저 렌더러의 고화질 스무딩 기법 활성화
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
-          ctx.drawImage(img, 0, 0, width, height);
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
           
-          // PNG가 투명 영역을 가진 경우를 안전하게 보존하기 위함
-          const mimeType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-          if (mimeType === 'image/png') {
-            resolve(canvas.toDataURL('image/png'));
+          // SLR 카메라 대형 보정본도 완벽한 픽셀 보존을 위해 3200px 경계 보존
+          if (width > height) {
+            if (width > maxW) {
+              height = Math.round((height * maxW) / width);
+              width = maxW;
+            }
           } else {
-            resolve(canvas.toDataURL('image/jpeg', quality));
+            if (height > maxH) {
+              width = Math.round((width * maxH) / height);
+              height = maxH;
+            }
           }
-        } else {
-          resolve(e.target?.result as string);
-        }
+          
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0, width, height);
+            
+            const mimeType = processedFile.type === 'image/png' ? 'image/png' : 'image/jpeg';
+            if (mimeType === 'image/png') {
+              resolve(canvas.toDataURL('image/png'));
+            } else {
+              resolve(canvas.toDataURL('image/jpeg', quality));
+            }
+          } else {
+            resolve(e.target?.result as string || '');
+          }
+        };
+        img.onerror = () => {
+          resolve(e.target?.result as string || '');
+        };
+        img.src = e.target?.result as string;
       };
-      img.onerror = () => {
-        resolve(e.target?.result as string);
+      reader.onerror = () => {
+        resolve('');
       };
-      img.src = e.target?.result as string;
-    };
-    reader.onerror = () => {
-      resolve('');
-    };
-    reader.readAsDataURL(file);
-  });
+      reader.readAsDataURL(processedFile);
+    });
+  } catch (err) {
+    console.error("Compression exception:", err);
+    return '';
+  }
 };
 
 const DEFAULT_VIDEO_URL = defaultVideo;
+
+const isStaleAssetUrl = (url: string): boolean => {
+  if (!url) return false;
+  // If the URL describes our main video but does not equal the currently compiled production file route, it is stale
+  if (url.includes('japanese_blue_ambient') && url !== DEFAULT_VIDEO_URL) {
+    return true;
+  }
+  return false;
+};
 
 const blobUrlCache = new Map<string, string>();
 
 const getPlayableVideoUrl = (url: string): string => {
   if (!url) return '';
-  if (url === 'video.mp4' || url.includes('mixkit.co') || url === 'indexeddb_data') return DEFAULT_VIDEO_URL;
+  if (url === 'video.mp4' || url.includes('mixkit.co') || url === 'indexeddb_data' || isStaleAssetUrl(url)) return DEFAULT_VIDEO_URL;
   if (!url.startsWith('data:video/')) return url;
   
   const cached = blobUrlCache.get(url);
@@ -466,6 +527,10 @@ export default function App() {
   const [isCreatingNewWork, setIsCreatingNewWork] = useState<boolean>(false);
   const [isCreatingNewJournal, setIsCreatingNewJournal] = useState<boolean>(false);
   const [isCreatingNewEmotion, setIsCreatingNewEmotion] = useState<boolean>(false);
+
+  // --- Real-time High Quality Image Auto Optimization & Compression Status ---
+  const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
+  const [optimizationProgress, setOptimizationProgress] = useState<string>('');
 
   // --- Drag and Drop / Tap-to-Swap reorder states ---
   const [draggedWorkImageIdx, setDraggedWorkImageIdx] = useState<number | null>(null);
@@ -736,34 +801,31 @@ export default function App() {
       // 8. Video load logic
       let finalVideoUrl = DEFAULT_VIDEO_URL;
       if (serverData?.videoUrl && serverData.videoUrl !== 'indexeddb_data') {
-        finalVideoUrl = serverData.videoUrl;
-        setVideoUrl(serverData.videoUrl);
-        localStorage.setItem('macoloris_video_url', serverData.videoUrl);
-        localStorage.setItem('macoloris_video_source', 'url');
+        if (isStaleAssetUrl(serverData.videoUrl)) {
+          finalVideoUrl = DEFAULT_VIDEO_URL;
+          setVideoUrl(DEFAULT_VIDEO_URL);
+          localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
+          syncPortfolioWithServer({ videoUrl: DEFAULT_VIDEO_URL });
+        } else {
+          finalVideoUrl = serverData.videoUrl;
+          setVideoUrl(serverData.videoUrl);
+          localStorage.setItem('macoloris_video_url', serverData.videoUrl);
+          localStorage.setItem('macoloris_video_source', 'url');
+        }
         setIsVideoReady(true);
       } else {
         const videoSource = localStorage.getItem('macoloris_video_source');
         if (videoSource === 'indexeddb') {
           loadVideoFromIndexedDB().then(blob => {
             if (blob) {
-              const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-              if (isMobile || blob.size < 12 * 1024 * 1024) {
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                  if (typeof reader.result === 'string') {
-                    setVideoUrl(reader.result);
-                    setIsVideoReady(true);
-                  }
-                };
-                reader.readAsDataURL(blob);
-              } else {
-                const objUrl = URL.createObjectURL(blob);
-                setVideoUrl(objUrl);
-                setIsVideoReady(true);
-              }
+              // ALWAYS use streamable Blob URLs (URL.createObjectURL) on both mobile and desktop.
+              // Base64 (readAsDataURL) of videos is NOT supported by iOS Safari, while Blob URLs work perfectly and consume significantly less RAM!
+              const objUrl = URL.createObjectURL(blob);
+              setVideoUrl(objUrl);
+              setIsVideoReady(true);
             } else {
               const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
-              if (savedUrl === 'indexeddb_data' || savedUrl === 'video.mp4' || savedUrl.includes('mixkit.co')) {
+              if (savedUrl === 'indexeddb_data' || savedUrl === 'video.mp4' || savedUrl.includes('mixkit.co') || isStaleAssetUrl(savedUrl)) {
                 setVideoUrl(DEFAULT_VIDEO_URL);
                 localStorage.setItem('macoloris_video_url', DEFAULT_VIDEO_URL);
               } else {
@@ -778,7 +840,7 @@ export default function App() {
           });
         } else {
           const savedUrl = localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
-          if (savedUrl && !savedUrl.startsWith('data:') && !savedUrl.startsWith('blob:') && savedUrl !== 'indexeddb_data' && savedUrl !== 'video.mp4' && !savedUrl.includes('mixkit.co')) {
+          if (savedUrl && !savedUrl.startsWith('data:') && !savedUrl.startsWith('blob:') && savedUrl !== 'indexeddb_data' && savedUrl !== 'video.mp4' && !savedUrl.includes('mixkit.co') && !isStaleAssetUrl(savedUrl)) {
             setVideoUrl(savedUrl);
           } else {
             setVideoUrl(DEFAULT_VIDEO_URL);
@@ -1432,17 +1494,26 @@ export default function App() {
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-[#121212]">
           <video 
-            ref={videoRef}
-            key={videoUrl}
+            ref={(el) => {
+              (videoRef as any).current = el;
+              if (el) {
+                el.setAttribute('muted', 'true');
+                el.setAttribute('playsinline', 'true');
+                el.muted = true;
+                el.playsInline = true;
+                el.play().catch(() => {});
+              }
+            }}
+            key={videoUrl ? (videoUrl.startsWith('data:') ? 'base64_' + videoUrl.length : videoUrl) : 'default'}
             src={getPlayableVideoUrl(videoUrl)}
+            poster={homeHeroImg}
             autoPlay 
             loop 
             muted 
             playsInline 
             onPlay={() => setIsVideoPlaying(true)}
             onPlaying={() => setIsVideoPlaying(true)}
-            className="absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 z-10"
-            style={{ opacity: isVideoPlaying ? 1 : 0 }}
+            className="absolute inset-0 w-full h-full object-cover opacity-85 z-10"
           />
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65 z-20"></div>
@@ -2435,7 +2506,7 @@ export default function App() {
 
                   {/* Curated Grid of Photos with matching slots colors */}
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {post.images.map((imgUrl, imageIndex) => {
+                    {(post.images || []).map((imgUrl, imageIndex) => {
                       const bgColors = ['bg-[#E8E7E2]', 'bg-[#DFDFD9]', 'bg-[#E5E4DE]'];
                       const cardBg = bgColors[imageIndex % bgColors.length];
                       return (
@@ -2767,47 +2838,79 @@ export default function App() {
                             type="file"
                             accept="image/*,video/*"
                             multiple
-                            onChange={(e) => {
+                            onChange={async (e) => {
                               if (e.target.files) {
                                 const filesArray = Array.from(e.target.files) as File[];
-                                filesArray.forEach(async (file) => {
+                                if (filesArray.length === 0) return;
+                                
+                                setIsOptimizing(true);
+                                setOptimizationProgress(`업로드 미디어 분석 및 변환 대기 중... (총 ${filesArray.length}개)`);
+                                
+                                const newImagesBatch: string[] = [];
+                                let completedCount = 0;
+                                
+                                for (const file of filesArray) {
                                   try {
-                                    if (file.type.startsWith('video/')) {
-                                      if (file.size > 15 * 1024 * 1024) {
-                                        alert("경고: 업로드하신 동영상 크기가 15MB를 초과합니다. 쾌적한 재생을 위해 가급적 5M~10MB 내외의 비디오 파일을 권장합니다.");
-                                      }
+                                    completedCount++;
+                                    setOptimizationProgress(`미디어 최적화 중... (${completedCount}/${filesArray.length})`);
+                                    
+                                    const nameLower = file.name.toLowerCase();
+                                    const isVideo = file.type.startsWith('video/');
+                                    const isHeic = nameLower.endsWith('.heic') || nameLower.endsWith('.heif') || file.type.includes('heic') || file.type.includes('heif');
+                                    
+                                    if (isVideo) {
+                                      setOptimizationProgress(`비디오 재생 호환성 분석 중... (${completedCount}/${filesArray.length})`);
+                                      
                                       const reader = new FileReader();
-                                      reader.onloadend = () => {
-                                        if (typeof reader.result === 'string') {
-                                          const videoDataUrl = reader.result;
-                                          setEditingWork(prev => {
-                                            if (!prev) return null;
-                                            const currentImgs = prev.images || [];
-                                            return {
-                                              ...prev,
-                                              images: [...currentImgs, videoDataUrl]
-                                            };
-                                          });
-                                        }
-                                      };
-                                      reader.readAsDataURL(file);
+                                      const videoDataUrl = await new Promise<string>((resolveVideo) => {
+                                        reader.onloadend = () => {
+                                          if (typeof reader.result === 'string') {
+                                            resolveVideo(reader.result);
+                                          } else {
+                                            resolveVideo('');
+                                          }
+                                        };
+                                        reader.readAsDataURL(file);
+                                      });
+                                      
+                                      if (videoDataUrl) {
+                                        newImagesBatch.push(videoDataUrl);
+                                      }
                                     } else {
-                                      const compressedData = await compressImageFile(file as File);
+                                      if (isHeic) {
+                                        setOptimizationProgress(`아이폰 HEIC 고화질 포맷 디코딩 및 JPG 변환 중... (${completedCount}/${filesArray.length})`);
+                                      } else if (file.size > 2 * 1024 * 1024) {
+                                        setOptimizationProgress(`고화질 대형 보정본 화질 유지형 무압박 최적화 중... (${completedCount}/${filesArray.length})`);
+                                      } else {
+                                        setOptimizationProgress(`이미지 저용량 웹 무손실 최적화 중... (${completedCount}/${filesArray.length})`);
+                                      }
+                                      
+                                      const compressedData = await compressImageFile(file);
                                       if (compressedData) {
-                                        setEditingWork(prev => {
-                                          if (!prev) return null;
-                                          const currentImgs = prev.images || [];
-                                          return {
-                                            ...prev,
-                                            images: [...currentImgs, compressedData]
-                                          };
-                                        });
+                                        newImagesBatch.push(compressedData);
                                       }
                                     }
+                                    
+                                    // 브라우저 렌더러 휴식시간 제공 (UI 렉, 멈춤 절대 차단)
+                                    await new Promise(r => setTimeout(r, 60));
                                   } catch (err) {
-                                    console.error("Image/video loading error:", err);
+                                    console.error("Image/video loading sequential error:", err);
                                   }
-                                });
+                                }
+                                
+                                if (newImagesBatch.length > 0) {
+                                  setEditingWork(prev => {
+                                    if (!prev) return null;
+                                    const currentImgs = prev.images || [];
+                                    return {
+                                      ...prev,
+                                      images: [...currentImgs, ...newImagesBatch]
+                                    };
+                                  });
+                                }
+                                
+                                setIsOptimizing(false);
+                                setOptimizationProgress('');
                               }
                             }}
                             className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
@@ -2815,6 +2918,15 @@ export default function App() {
                           <p className="text-[10px] font-mono text-[#222222]/70">📷 클릭하거나 이미지를 드래그하여 업로드 (사진/동영상 다중 선택 가능)</p>
                           <p className="text-[8px] text-[#222222]/40 mt-0.5">선택된 미디어는 아래 목록에 즉시 추가됩니다.</p>
                         </div>
+                        {isOptimizing && optimizationProgress && (
+                          <div className="mt-2 bg-[#4A6FA5]/5 border border-[#4A6FA5]/20 p-2.5 rounded flex items-center justify-between text-[#4A6FA5] animate-pulse">
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-[#4A6FA5] animate-ping"></span>
+                              <span className="text-[10px] font-mono font-bold leading-none">{optimizationProgress}</span>
+                            </div>
+                            <span className="text-[8.5px] font-mono font-black uppercase tracking-wider bg-[#4A6FA5] text-white px-1.5 py-0.5 rounded">OPTIMIZING</span>
+                          </div>
+                        )}
                         {editingWork.images && editingWork.images.length > 0 && (
                           <div className="mt-3">
                             <span className="text-[10px] text-[#222222]/80 block mb-1 font-bold">
@@ -3450,6 +3562,7 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+
                     {/* 나만의 커스텀 탭 메뉴 제어 (Custom Tabs Manager) */}
                     <div className="border-t border-black/5 pt-3 mt-3">
                       <div className="flex justify-between items-center mb-2">
@@ -3538,12 +3651,18 @@ export default function App() {
                                     const file = e.target.files?.[0];
                                     if (file) {
                                       try {
+                                        setIsOptimizing(true);
+                                        setOptimizationProgress("배너 이미지 변환 및 최적화 중...");
                                         const compressedData = await compressImageFile(file);
                                         if (compressedData) {
                                           setEditingCustomTab({ ...editingCustomTab, image: compressedData });
                                         }
+                                        setIsOptimizing(false);
+                                        setOptimizationProgress('');
                                       } catch (err) {
                                         console.error("Custom tab banner upload error:", err);
+                                        setIsOptimizing(false);
+                                        setOptimizationProgress('');
                                       }
                                     }
                                   }}
@@ -3728,53 +3847,90 @@ export default function App() {
                             type="file"
                             accept="image/*,video/*"
                             multiple
-                            onChange={(e) => {
+                            onChange={async (e) => {
                               if (e.target.files) {
                                 const filesArray = Array.from(e.target.files) as File[];
-                                filesArray.forEach(async (file) => {
+                                if (filesArray.length === 0) return;
+                                
+                                setIsOptimizing(true);
+                                setOptimizationProgress(`저널 미디어 분석 및 대기 중... (총 ${filesArray.length}개)`);
+                                
+                                const newImagesBatch: string[] = [];
+                                let completedCount = 0;
+                                
+                                for (const file of filesArray) {
                                   try {
-                                    if (file.type.startsWith('video/')) {
-                                      if (file.size > 15 * 1024 * 1024) {
-                                        alert("경고: 업로드하신 동영상 크기가 15MB를 초과합니다. 쾌적한 재생을 위해 가급적 5M~10MB 내외의 비디오 파일을 권장합니다.");
-                                      }
+                                    completedCount++;
+                                    setOptimizationProgress(`저널 미디어 가공 중... (${completedCount}/${filesArray.length})`);
+                                    
+                                    const nameLower = file.name.toLowerCase();
+                                    const isVideo = file.type.startsWith('video/');
+                                    const isHeic = nameLower.endsWith('.heic') || nameLower.endsWith('.heif') || file.type.includes('heic') || file.type.includes('heif');
+                                    
+                                    if (isVideo) {
+                                      setOptimizationProgress(`비디오 형식 무손실 로딩 중... (${completedCount}/${filesArray.length})`);
+                                      
                                       const reader = new FileReader();
-                                      reader.onloadend = () => {
-                                        if (typeof reader.result === 'string') {
-                                          const videoDataUrl = reader.result;
-                                          setEditingJournal(prev => {
-                                            if (!prev) return null;
-                                            const currentImgs = prev.images || [];
-                                            return {
-                                              ...prev,
-                                              images: [...currentImgs, videoDataUrl]
-                                            };
-                                          });
-                                        }
-                                      };
-                                      reader.readAsDataURL(file);
+                                      const videoDataUrl = await new Promise<string>((resolveVideo) => {
+                                        reader.onloadend = () => {
+                                          if (typeof reader.result === 'string') {
+                                            resolveVideo(reader.result);
+                                          } else {
+                                            resolveVideo('');
+                                          }
+                                        };
+                                        reader.readAsDataURL(file);
+                                      });
+                                      
+                                      if (videoDataUrl) {
+                                        newImagesBatch.push(videoDataUrl);
+                                      }
                                     } else {
-                                      const compressedData = await compressImageFile(file as File);
+                                      if (isHeic) {
+                                        setOptimizationProgress(`아이폰 HEIC 고화질 포맷 디코딩 및 JPG 변환 중... (${completedCount}/${filesArray.length})`);
+                                      } else if (file.size > 2 * 1024 * 1024) {
+                                        setOptimizationProgress(`대형 고화질 저널 최적화 압축 중... (${completedCount}/${filesArray.length})`);
+                                      } else {
+                                        setOptimizationProgress(`저널 이미지 용량 최적화 중... (${completedCount}/${filesArray.length})`);
+                                      }
+                                      
+                                      const compressedData = await compressImageFile(file);
                                       if (compressedData) {
-                                        setEditingJournal(prev => {
-                                          if (!prev) return null;
-                                          const currentImgs = prev.images || [];
-                                          return {
-                                            ...prev,
-                                            images: [...currentImgs, compressedData]
-                                          };
-                                        });
+                                        newImagesBatch.push(compressedData);
                                       }
                                     }
+                                    
+                                    await new Promise(r => setTimeout(r, 60));
                                   } catch (err) {
-                                    console.error("Journal image/video compression error:", err);
+                                    console.error("Journal image sequential loading error:", err);
                                   }
-                                });
+                                }
+                                
+                                if (newImagesBatch.length > 0) {
+                                  setEditingJournal(prev => {
+                                    if (!prev) return null;
+                                    const currentImgs = prev.images || [];
+                                    return {
+                                      ...prev,
+                                      images: [...currentImgs, ...newImagesBatch]
+                                    };
+                                  });
+                                }
+                                
+                                setIsOptimizing(false);
+                                setOptimizationProgress('');
                               }
                             }}
                             className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                           />
                           <p className="text-[10px] text-[#222222]/70 font-mono">📷 클릭하거나 미디어를 드래그하여 업로드 (사진/동영상 다중 선택 가능)</p>
                         </div>
+                        {isOptimizing && optimizationProgress && (
+                          <div className="mt-2 bg-[#4A6FA5]/5 border border-[#4A6FA5]/20 p-2 text-[#4A6FA5] flex items-center justify-between rounded animate-pulse">
+                            <span className="text-[9.5px] font-mono font-bold">{optimizationProgress}</span>
+                            <span className="text-[8px] tracking-wide font-black bg-[#4A6FA5] text-white px-1.5 py-0.5 rounded leading-none">PROGRESS</span>
+                          </div>
+                        )}
                         {editingJournal.images && editingJournal.images.length > 0 && (
                           <div className="mt-3">
                             <span className="text-[10px] text-[#222222]/80 block mb-1 font-bold">
