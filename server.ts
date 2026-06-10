@@ -104,6 +104,41 @@ async function startServer() {
     }
   });
 
+  // API: Upload image as base64 to server disk (Reduces database size and completely prevents LocalStorage limit crashes)
+  app.post("/api/image/upload", (req, res) => {
+    try {
+      const { base64, filename } = req.body;
+      if (!base64) {
+        return res.status(400).json({ error: "No image body provided" });
+      }
+
+      // Convert base64 stream to raw binary
+      const base64Data = base64.replace(/^data:image\/[^;]+;base64,/, "");
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      const uploadDir = path.join(process.cwd(), 'src', 'data', 'uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+
+      let fileBaseName = `${Date.now()}_image.jpg`;
+      if (filename) {
+        const cleanName = filename.replace(/[^a-zA-Z0-9_\.-]/g, '_');
+        fileBaseName = `${Date.now()}_${cleanName}`;
+      }
+
+      const filePath = path.join(uploadDir, fileBaseName);
+      fs.writeFileSync(filePath, buffer);
+
+      console.log(`Image file successfully written to server disk: ${filePath}`);
+      const serverUrl = `/src/data/uploads/${fileBaseName}`;
+      return res.json({ status: "success", url: serverUrl });
+    } catch (e: any) {
+      console.error("Failed to write image file server-side:", e);
+      return res.status(500).json({ error: e.message || "Internal Server Error" });
+    }
+  });
+
   // API: Serve ALL video files (*.mp4, *.mov, *.webm, including intro.mp4 and defaults) with robust HTTP Range (Streaming) support for Safari/Mobile devices
   app.get(/\.(mp4|mov|webm)$/i, (req, res, next) => {
     // Decode URI path in case of any URL encoding
@@ -170,8 +205,9 @@ async function startServer() {
     next();
   });
 
-  // Serve static assets from /src/assets directly in both DEV and PROD to bypass SPA wildcard fallback
+  // Serve static assets from /src/assets and /src/data/uploads directly in both DEV and PROD to bypass SPA wildcard fallback
   app.use('/src/assets', express.static(path.join(process.cwd(), 'src', 'assets')));
+  app.use('/src/data/uploads', express.static(path.join(process.cwd(), 'src', 'data', 'uploads')));
 
   // Hot Module Replacement (HMR) and development asset pipeline vs. Production Static pipeline
   if (process.env.NODE_ENV !== "production") {

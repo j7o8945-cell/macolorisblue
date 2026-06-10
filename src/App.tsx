@@ -564,6 +564,12 @@ export default function App() {
     setDragHoverJournalImageIdx(null);
   };
 
+  // --- Helper to detect typical static hosting environments without server backend support ---
+  const isStaticHosting = (): boolean => {
+    const hn = window.location.hostname;
+    return hn.endsWith('netlify.app') || hn.endsWith('github.io') || hn.endsWith('vercel.app');
+  };
+
   // --- Synchronize state with backend disk storage in real-time (Safe Partial Upload) ---
   const syncPortfolioWithServer = async (updatedOverride: {
     works?: Work[];
@@ -575,7 +581,14 @@ export default function App() {
     visibleSections?: typeof visibleSections;
     videoUrl?: string;
   } = {}) => {
-    // 1. Capture the exact values of previous states synchronously before any network operations start.
+    // 1. If currently hosted in a static web container (e.g. Netlify/Vercel), skip api synchronisation completely.
+    // This allows edits & uploads to save beautifully in user browser local storage/IndexedDB without any rollback!
+    if (isStaticHosting()) {
+      console.log("Static-only hosting container detected. Saving purely to local persistent storage.");
+      return;
+    }
+
+    // 2. Capture the exact values of previous states synchronously before any network operations start.
     // Stale closure value in this render represents the previous consistent state before save helper trigger!
     const previousWorks = Array.isArray(works) ? JSON.parse(JSON.stringify(works)) : [];
     const previousJournals = Array.isArray(journals) ? JSON.parse(JSON.stringify(journals)) : [];
@@ -600,11 +613,11 @@ export default function App() {
       if (updatedOverride.visibleSections !== undefined) payload.visibleSections = updatedOverride.visibleSections;
       
       if (updatedOverride.videoUrl !== undefined) {
-        let vUrl = updatedOverride.videoUrl;
-        if (vUrl && (vUrl.startsWith('data:') || vUrl.startsWith('blob:') || vUrl === 'indexeddb_data')) {
-          vUrl = '';
-        }
-        payload.videoUrl = vUrl;
+         let vUrl = updatedOverride.videoUrl;
+         if (vUrl && (vUrl.startsWith('data:') || vUrl.startsWith('blob:') || vUrl === 'indexeddb_data')) {
+           vUrl = '';
+         }
+         payload.videoUrl = vUrl;
       }
 
       // Do nothing if payload is empty to prevent blank network requests
@@ -618,6 +631,13 @@ export default function App() {
 
       if (!response.ok) {
         throw new Error(`Server responded with status code ${response.status}`);
+      }
+
+      // Ensure response content-type is valid JSON (protects against single-page static Wildcard proxy/catch-alls)
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        console.warn("Server API returned non-JSON response. Treating as static or fallback server.");
+        return;
       }
     } catch (err) {
       console.error("Failed to sync with server db, rolling back optimistically modified state:", err);
@@ -1098,13 +1118,15 @@ export default function App() {
               finalVideoUrlToSync = uploadData.url;
             } else {
               localStorage.setItem('macoloris_video_url', 'indexeddb_data');
-              setVideoUrl(base64Data);
+              const localBlobUrl = URL.createObjectURL(tempVideoFile);
+              setVideoUrl(localBlobUrl);
               finalVideoUrlToSync = 'indexeddb_data';
             }
           } catch (apiErr) {
             console.error("Failed to upload video to server:", apiErr);
             localStorage.setItem('macoloris_video_url', 'indexeddb_data');
-            setVideoUrl(base64Data);
+            const localBlobUrl = URL.createObjectURL(tempVideoFile);
+            setVideoUrl(localBlobUrl);
             finalVideoUrlToSync = 'indexeddb_data';
           }
           
@@ -2963,7 +2985,26 @@ export default function App() {
                                       
                                       const compressedData = await compressImageFile(file);
                                       if (compressedData) {
-                                        newImagesBatch.push(compressedData);
+                                        try {
+                                          const uploadRes = await fetch("/api/image/upload", {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ base64: compressedData, filename: file.name })
+                                          });
+                                          if (uploadRes.ok) {
+                                            const uploadData = await uploadRes.json();
+                                            if (uploadData.url) {
+                                              newImagesBatch.push(uploadData.url);
+                                            } else {
+                                              newImagesBatch.push(compressedData);
+                                            }
+                                          } else {
+                                            newImagesBatch.push(compressedData);
+                                          }
+                                        } catch (uploadErr) {
+                                          console.error("Failed to upload image to server, falling back to base64:", uploadErr);
+                                          newImagesBatch.push(compressedData);
+                                        }
                                       }
                                     }
                                     
@@ -3731,7 +3772,26 @@ export default function App() {
                                         setOptimizationProgress("배너 이미지 변환 및 최적화 중...");
                                         const compressedData = await compressImageFile(file);
                                         if (compressedData) {
-                                          setEditingCustomTab({ ...editingCustomTab, image: compressedData });
+                                          try {
+                                            const uploadRes = await fetch("/api/image/upload", {
+                                              method: "POST",
+                                              headers: { "Content-Type": "application/json" },
+                                              body: JSON.stringify({ base64: compressedData, filename: file.name })
+                                            });
+                                            if (uploadRes.ok) {
+                                              const uploadData = await uploadRes.json();
+                                              if (uploadData.url) {
+                                                setEditingCustomTab({ ...editingCustomTab, image: uploadData.url });
+                                              } else {
+                                                setEditingCustomTab({ ...editingCustomTab, image: compressedData });
+                                              }
+                                            } else {
+                                              setEditingCustomTab({ ...editingCustomTab, image: compressedData });
+                                            }
+                                          } catch (uploadErr) {
+                                            console.error("Custom tab image server upload error:", uploadErr);
+                                            setEditingCustomTab({ ...editingCustomTab, image: compressedData });
+                                          }
                                         }
                                         setIsOptimizing(false);
                                         setOptimizationProgress('');
@@ -3987,7 +4047,26 @@ export default function App() {
                                       
                                       const compressedData = await compressImageFile(file);
                                       if (compressedData) {
-                                        newImagesBatch.push(compressedData);
+                                        try {
+                                          const uploadRes = await fetch("/api/image/upload", {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ base64: compressedData, filename: file.name })
+                                          });
+                                          if (uploadRes.ok) {
+                                            const uploadData = await uploadRes.json();
+                                            if (uploadData.url) {
+                                              newImagesBatch.push(uploadData.url);
+                                            } else {
+                                              newImagesBatch.push(compressedData);
+                                            }
+                                          } else {
+                                            newImagesBatch.push(compressedData);
+                                          }
+                                        } catch (uploadErr) {
+                                          console.error("Journal image server upload error, fallback to base64:", uploadErr);
+                                          newImagesBatch.push(compressedData);
+                                        }
                                       }
                                     }
                                     
