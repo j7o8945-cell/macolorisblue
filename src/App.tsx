@@ -575,6 +575,17 @@ export default function App() {
     visibleSections?: typeof visibleSections;
     videoUrl?: string;
   } = {}) => {
+    // 1. Capture the exact values of previous states synchronously before any network operations start.
+    // Stale closure value in this render represents the previous consistent state before save helper trigger!
+    const previousWorks = Array.isArray(works) ? JSON.parse(JSON.stringify(works)) : [];
+    const previousJournals = Array.isArray(journals) ? JSON.parse(JSON.stringify(journals)) : [];
+    const previousAbout = about ? JSON.parse(JSON.stringify(about)) : INITIAL_ABOUT;
+    const previousContact = contact ? JSON.parse(JSON.stringify(contact)) : INITIAL_CONTACT;
+    const previousEmotions = Array.isArray(emotions) ? JSON.parse(JSON.stringify(emotions)) : [];
+    const previousCustomTabs = Array.isArray(customTabs) ? JSON.parse(JSON.stringify(customTabs)) : [];
+    const previousVisibleSections = visibleSections ? JSON.parse(JSON.stringify(visibleSections)) : {};
+    const previousVideoUrl = videoUrl;
+
     try {
       // Build a payload with ONLY the fields that are actually being changed.
       // This allows the Express server to perform a safe merge/patch, preventing stale client states
@@ -599,13 +610,59 @@ export default function App() {
       // Do nothing if payload is empty to prevent blank network requests
       if (Object.keys(payload).length === 0) return;
 
-      await fetch("/api/portfolio", {
+      const response = await fetch("/api/portfolio", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
+
+      if (!response.ok) {
+        throw new Error(`Server responded with status code ${response.status}`);
+      }
     } catch (err) {
-      console.warn("Could not sync with server db, locally protected:", err);
+      console.error("Failed to sync with server db, rolling back optimistically modified state:", err);
+      
+      // Rollback React State to maintain data consistency
+      if (updatedOverride.works !== undefined) setWorks(previousWorks);
+      if (updatedOverride.journals !== undefined) setJournals(previousJournals);
+      if (updatedOverride.about !== undefined) setAbout(previousAbout);
+      if (updatedOverride.contact !== undefined) setContact(previousContact);
+      if (updatedOverride.emotions !== undefined) setEmotions(previousEmotions);
+      if (updatedOverride.customTabs !== undefined) setCustomTabs(previousCustomTabs);
+      if (updatedOverride.visibleSections !== undefined) setVisibleSections(previousVisibleSections);
+      if (updatedOverride.videoUrl !== undefined) setVideoUrl(previousVideoUrl);
+
+      // Rollback Local Storage State to prevent stale client-side caches
+      try {
+        if (updatedOverride.works !== undefined) {
+          localStorage.setItem('macoloris_works', JSON.stringify(previousWorks));
+        }
+        if (updatedOverride.journals !== undefined) {
+          localStorage.setItem('macoloris_journals', JSON.stringify(previousJournals));
+        }
+        if (updatedOverride.about !== undefined) {
+          localStorage.setItem('macoloris_about', JSON.stringify(previousAbout));
+        }
+        if (updatedOverride.contact !== undefined) {
+          localStorage.setItem('macoloris_contact', JSON.stringify(previousContact));
+        }
+        if (updatedOverride.emotions !== undefined) {
+          localStorage.setItem('macoloris_emotions', JSON.stringify(previousEmotions));
+        }
+        if (updatedOverride.customTabs !== undefined) {
+          localStorage.setItem('macoloris_custom_tabs', JSON.stringify(previousCustomTabs));
+        }
+        if (updatedOverride.visibleSections !== undefined) {
+          localStorage.setItem('macoloris_visible_sections', JSON.stringify(previousVisibleSections));
+        }
+        if (updatedOverride.videoUrl !== undefined) {
+          localStorage.setItem('macoloris_video_url', previousVideoUrl);
+        }
+      } catch (storageErr) {
+        console.warn("Could not rollback local storage:", storageErr);
+      }
+
+      alert("⚠️ 서버 게시물 업로드 동기화 도중 지연/오류가 감지되어, 기존에 안전하게 유지되던 상태로 즉시 복원되었습니다. (네트워크 연결 혹은 대용량 비디오 형식을 다시 한 번 검토해주세요.)");
     }
   };
 
@@ -1095,45 +1152,51 @@ export default function App() {
     setWorks(newWorks);
     try {
       localStorage.setItem('macoloris_works', JSON.stringify(newWorks));
-      syncPortfolioWithServer({ works: newWorks });
     } catch (e: any) {
-      if (e.name === 'QuotaExceededError' || e.code === 22) {
-        alert("⚠️ 브라우저의 저장 용량 한도(5MB~10MB)를 초과하여 게시물이 로컬에 저장되지 못했습니다. 새로 추가하시려는 동영상/이미지 파일의 용량이 너무 큽니다. 모바일 및 웹에서의 쾌적한 재생을 위해 5MB 이하 수준으로 압축된 MP4(동영상) 또는 JPEG(사진) 파일을 업로드하는 것을 절대 권장합니다.");
-      } else {
-        console.error("Storage save error:", e);
-      }
+      console.warn("Local storage quota exceeded, falling back to server disk save:", e);
     }
+    // Always sync with server backend database irrespective of localStorage state!
+    syncPortfolioWithServer({ works: newWorks });
   };
 
   const saveJournalsToStorage = (newJournals: Journal[]) => {
     setJournals(newJournals);
     try {
       localStorage.setItem('macoloris_journals', JSON.stringify(newJournals));
-      syncPortfolioWithServer({ journals: newJournals });
     } catch (e: any) {
-      if (e.name === 'QuotaExceededError' || e.code === 22) {
-        alert("⚠️ 브라우저의 저장 용량 한도(5MB~10MB)를 초과하여 저널이 로컬에 저장되지 못했습니다. 동영상/이미지 파일의 해상도나 용량을 약간 줄여서 압축된 파일로 재업로드하십시오.");
-      } else {
-        console.error("Storage save error:", e);
-      }
+      console.warn("Local storage quota exceeded, falling back to server disk save:", e);
     }
+    // Always sync with server backend database irrespective of localStorage state!
+    syncPortfolioWithServer({ journals: newJournals });
   };
 
   const saveAboutToStorage = (newAbout: AboutInfo) => {
     setAbout(newAbout);
-    localStorage.setItem('macoloris_about', JSON.stringify(newAbout));
+    try {
+      localStorage.setItem('macoloris_about', JSON.stringify(newAbout));
+    } catch (e) {
+      console.warn("Local storage quota exceeded:", e);
+    }
     syncPortfolioWithServer({ about: newAbout });
   };
 
   const saveContactToStorage = (newContact: ContactInfo) => {
     setContact(newContact);
-    localStorage.setItem('macoloris_contact', JSON.stringify(newContact));
+    try {
+      localStorage.setItem('macoloris_contact', JSON.stringify(newContact));
+    } catch (e) {
+      console.warn("Local storage quota exceeded:", e);
+    }
     syncPortfolioWithServer({ contact: newContact });
   };
 
   const saveVideoUrlToStorage = (url: string) => {
     setVideoUrl(url);
-    localStorage.setItem('macoloris_video_url', url);
+    try {
+      localStorage.setItem('macoloris_video_url', url);
+    } catch (e) {
+      console.warn("Local storage quota exceeded:", e);
+    }
     syncPortfolioWithServer({ videoUrl: url });
   };
 
@@ -1489,7 +1552,6 @@ export default function App() {
     return (
       <div 
         className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] bg-cover bg-center bg-no-repeat text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden"
-        style={{ backgroundImage: `url(${homeHeroImg})` }}
       >
         {/* Background video playing looping ambiently */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-[#121212]">
@@ -1506,7 +1568,6 @@ export default function App() {
             }}
             key={videoUrl ? (videoUrl.startsWith('data:') ? 'base64_' + videoUrl.length : videoUrl) : 'default'}
             src={getPlayableVideoUrl(videoUrl)}
-            poster={homeHeroImg}
             autoPlay 
             loop 
             muted 
@@ -2859,22 +2920,37 @@ export default function App() {
                                     const isHeic = nameLower.endsWith('.heic') || nameLower.endsWith('.heif') || file.type.includes('heic') || file.type.includes('heif');
                                     
                                     if (isVideo) {
-                                      setOptimizationProgress(`비디오 재생 호환성 분석 중... (${completedCount}/${filesArray.length})`);
+                                      setOptimizationProgress(`모바일 호환용 비디오 무손실 디스크 업로드 중... (${completedCount}/${filesArray.length})`);
                                       
                                       const reader = new FileReader();
                                       const videoDataUrl = await new Promise<string>((resolveVideo) => {
                                         reader.onloadend = () => {
-                                          if (typeof reader.result === 'string') {
-                                            resolveVideo(reader.result);
-                                          } else {
-                                            resolveVideo('');
-                                          }
+                                          resolveVideo(reader.result as string || '');
                                         };
                                         reader.readAsDataURL(file);
                                       });
                                       
                                       if (videoDataUrl) {
-                                        newImagesBatch.push(videoDataUrl);
+                                        try {
+                                          const uploadRes = await fetch("/api/video/upload", {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ base64: videoDataUrl, filename: file.name })
+                                          });
+                                          if (uploadRes.ok) {
+                                            const uploadData = await uploadRes.json();
+                                            if (uploadData.url) {
+                                              newImagesBatch.push(uploadData.url);
+                                            } else {
+                                              newImagesBatch.push(videoDataUrl);
+                                            }
+                                          } else {
+                                            newImagesBatch.push(videoDataUrl);
+                                          }
+                                        } catch (err) {
+                                          console.error("Failed to upload video to server:", err);
+                                          newImagesBatch.push(videoDataUrl);
+                                        }
                                       }
                                     } else {
                                       if (isHeic) {
@@ -3868,22 +3944,37 @@ export default function App() {
                                     const isHeic = nameLower.endsWith('.heic') || nameLower.endsWith('.heif') || file.type.includes('heic') || file.type.includes('heif');
                                     
                                     if (isVideo) {
-                                      setOptimizationProgress(`비디오 형식 무손실 로딩 중... (${completedCount}/${filesArray.length})`);
+                                      setOptimizationProgress(`모바일 호환용 비디오 무손실 디스크 업로드 중... (${completedCount}/${filesArray.length})`);
                                       
                                       const reader = new FileReader();
                                       const videoDataUrl = await new Promise<string>((resolveVideo) => {
                                         reader.onloadend = () => {
-                                          if (typeof reader.result === 'string') {
-                                            resolveVideo(reader.result);
-                                          } else {
-                                            resolveVideo('');
-                                          }
+                                          resolveVideo(reader.result as string || '');
                                         };
                                         reader.readAsDataURL(file);
                                       });
                                       
                                       if (videoDataUrl) {
-                                        newImagesBatch.push(videoDataUrl);
+                                        try {
+                                          const uploadRes = await fetch("/api/video/upload", {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ base64: videoDataUrl, filename: file.name })
+                                          });
+                                          if (uploadRes.ok) {
+                                            const uploadData = await uploadRes.json();
+                                            if (uploadData.url) {
+                                              newImagesBatch.push(uploadData.url);
+                                            } else {
+                                              newImagesBatch.push(videoDataUrl);
+                                            }
+                                          } else {
+                                            newImagesBatch.push(videoDataUrl);
+                                          }
+                                        } catch (err) {
+                                          console.error("Failed to upload video to server:", err);
+                                          newImagesBatch.push(videoDataUrl);
+                                        }
                                       }
                                     } else {
                                       if (isHeic) {

@@ -34,7 +34,7 @@ async function startServer() {
     }
   });
 
-  // API: Save/Merge globally synchronized portfolio state (Partial update support)
+  // API: Get, merge and save globally synchronized portfolio state (Partial update support)
   app.post("/api/portfolio", (req, res) => {
     try {
       const data = req.body;
@@ -69,10 +69,10 @@ async function startServer() {
     }
   });
 
-  // API: Upload intro video as base64 to server disk
+  // API: Upload video as base64 to server disk (Support for both intro.mp4 and unique project/journal videos)
   app.post("/api/video/upload", (req, res) => {
     try {
-      const { base64 } = req.body;
+      const { base64, filename } = req.body;
       if (!base64) {
         return res.status(400).json({ error: "No video body provided" });
       }
@@ -86,11 +86,18 @@ async function startServer() {
         fs.mkdirSync(uploadDir, { recursive: true });
       }
 
-      const filePath = path.join(uploadDir, 'intro.mp4');
+      let fileBaseName = 'intro.mp4';
+      if (filename && filename !== 'intro.mp4') {
+        const cleanName = filename.replace(/[^a-zA-Z0-9_\.-]/g, '_');
+        fileBaseName = `${Date.now()}_${cleanName}`;
+      }
+
+      const filePath = path.join(uploadDir, fileBaseName);
       fs.writeFileSync(filePath, buffer);
 
-      console.log("Intro video successfully written to server disk:", filePath);
-      return res.json({ status: "success", url: "/api/video/intro.mp4" });
+      console.log(`Video file successfully written to server disk: ${filePath}`);
+      const serverUrl = `/src/data/uploads/${fileBaseName}`;
+      return res.json({ status: "success", url: serverUrl });
     } catch (e: any) {
       console.error("Failed to write video file server-side:", e);
       return res.status(500).json({ error: e.message || "Internal Server Error" });
