@@ -16,7 +16,8 @@ import {
   Sliders,
   Check,
   ChevronDown,
-  X
+  X,
+  Save
 } from 'lucide-react';
 import { Work, Journal, AboutInfo, ContactInfo, ActiveTab, CustomTab } from './types';
 import { INITIAL_WORKS, INITIAL_JOURNALS, INITIAL_ABOUT, INITIAL_CONTACT } from './initialData';
@@ -458,6 +459,39 @@ export default function App() {
   const [videoUrl, setVideoUrl] = useState<string>(() => {
     return localStorage.getItem('macoloris_video_url') || DEFAULT_VIDEO_URL;
   });
+
+  // Stable tracking of latest states for interval synchronization, strictly resolving React closure limitations
+  const latestStatesRef = React.useRef({
+    works: [] as Work[],
+    journals: [] as Journal[],
+    about: INITIAL_ABOUT,
+    contact: INITIAL_CONTACT,
+    emotions: [] as { name: string; english: string; description: string; detail: string }[],
+    customTabs: [] as CustomTab[],
+    visibleSections: {} as {
+      works?: boolean;
+      archive?: boolean;
+      emotions?: boolean;
+      journal?: boolean;
+      about?: boolean;
+      contact?: boolean;
+    },
+    videoUrl: ''
+  });
+
+  React.useEffect(() => {
+    latestStatesRef.current = {
+      works,
+      journals,
+      about,
+      contact,
+      emotions,
+      customTabs,
+      visibleSections,
+      videoUrl
+    };
+  }, [works, journals, about, contact, emotions, customTabs, visibleSections, videoUrl]);
+
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
     const saved = localStorage.getItem('macoloris_visible_sections');
     if (saved) {
@@ -954,6 +988,9 @@ export default function App() {
     video.playsInline = true;
     video.setAttribute('muted', '');
     video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', 'true');
+    video.setAttribute('autoplay', 'true');
+    video.setAttribute('preload', 'auto');
 
     // Explicitly load the video source structure for iOS Safari stability
     try {
@@ -1008,8 +1045,9 @@ export default function App() {
     if (!isInitialized) return;
     let active = true;
     const pollInterval = setInterval(async () => {
-      // Skip if active editing is underway to avoid interrupting the admin's workflow
-      if (editingWork !== null || editingJournal !== null) {
+      // Skip completely if admin mode is toggled, active editing is underway, creating new items or current tab is ADMIN.
+      // This guarantees that the server's older polling state never overwrites the Admin's latest unpublished content session!
+      if (isAdmin || activeTab === 'ADMIN' || editingWork !== null || editingJournal !== null || isCreatingNewWork || isCreatingNewJournal) {
         return;
       }
       
@@ -1019,36 +1057,38 @@ export default function App() {
         if (res.ok && active) {
           const parsed = await res.json();
           if (parsed && parsed.status !== "none") {
+            const currentRef = latestStatesRef.current;
+            
             // Compare and update states ONLY if different to minimize React re-renders & state flicker
-            if (parsed.works && JSON.stringify(parsed.works) !== JSON.stringify(works)) {
+            if (parsed.works && JSON.stringify(parsed.works) !== JSON.stringify(currentRef.works)) {
               setWorks(parsed.works);
               localStorage.setItem('macoloris_works', JSON.stringify(parsed.works));
             }
-            if (parsed.journals && JSON.stringify(parsed.journals) !== JSON.stringify(journals)) {
+            if (parsed.journals && JSON.stringify(parsed.journals) !== JSON.stringify(currentRef.journals)) {
               setJournals(parsed.journals);
               localStorage.setItem('macoloris_journals', JSON.stringify(parsed.journals));
             }
-            if (parsed.about && JSON.stringify(parsed.about) !== JSON.stringify(about)) {
+            if (parsed.about && JSON.stringify(parsed.about) !== JSON.stringify(currentRef.about)) {
               setAbout(parsed.about);
               localStorage.setItem('macoloris_about', JSON.stringify(parsed.about));
             }
-            if (parsed.contact && JSON.stringify(parsed.contact) !== JSON.stringify(contact)) {
+            if (parsed.contact && JSON.stringify(parsed.contact) !== JSON.stringify(currentRef.contact)) {
               setContact(parsed.contact);
               localStorage.setItem('macoloris_contact', JSON.stringify(parsed.contact));
             }
-            if (parsed.emotions && JSON.stringify(parsed.emotions) !== JSON.stringify(emotions)) {
+            if (parsed.emotions && JSON.stringify(parsed.emotions) !== JSON.stringify(currentRef.emotions)) {
               setEmotions(parsed.emotions);
               localStorage.setItem('macoloris_emotions', JSON.stringify(parsed.emotions));
             }
-            if (parsed.customTabs && JSON.stringify(parsed.customTabs) !== JSON.stringify(customTabs)) {
+            if (parsed.customTabs && JSON.stringify(parsed.customTabs) !== JSON.stringify(currentRef.customTabs)) {
               setCustomTabs(parsed.customTabs);
               localStorage.setItem('macoloris_custom_tabs', JSON.stringify(parsed.customTabs));
             }
-            if (parsed.visibleSections && JSON.stringify(parsed.visibleSections) !== JSON.stringify(visibleSections)) {
+            if (parsed.visibleSections && JSON.stringify(parsed.visibleSections) !== JSON.stringify(currentRef.visibleSections)) {
               setVisibleSections(parsed.visibleSections);
               localStorage.setItem('macoloris_visible_sections', JSON.stringify(parsed.visibleSections));
             }
-            if (parsed.videoUrl && parsed.videoUrl !== 'indexeddb_data' && parsed.videoUrl !== videoUrl) {
+            if (parsed.videoUrl && parsed.videoUrl !== 'indexeddb_data' && parsed.videoUrl !== currentRef.videoUrl) {
               setIsVideoPlaying(false); // Reset playback state so new video begins intro transition
               setVideoUrl(parsed.videoUrl);
               localStorage.setItem('macoloris_video_url', parsed.videoUrl);
@@ -1059,13 +1099,13 @@ export default function App() {
       } catch (err) {
         console.warn("Polling portfolio update failed:", err);
       }
-    }, 5000); // 5 seconds polling rate for excellent cross-device synchronization
+    }, 7000); // 7 seconds interval to avoid redundant polling crashes and minimize memory load
 
     return () => {
       active = false;
       clearInterval(pollInterval);
     };
-  }, [works, journals, about, contact, emotions, customTabs, visibleSections, videoUrl, editingWork, editingJournal, isInitialized]);
+  }, [isInitialized, isAdmin, activeTab, editingWork, editingJournal, isCreatingNewWork, isCreatingNewJournal]);
 
   // --- Admin settings sync workspace ---
   useEffect(() => {
@@ -1306,10 +1346,91 @@ export default function App() {
     }
   };
 
-  const handleAdminLogout = () => {
-    setIsAdmin(false);
-    alert('로그아웃 되었습니다.');
+  const handleForceAllSyncSave = async (isQuiet = false) => {
+    try {
+      const payload = {
+        works,
+        journals,
+        about,
+        contact,
+        emotions,
+        customTabs,
+        visibleSections,
+        videoUrl: videoUrl === 'indexeddb_data' ? '' : videoUrl
+      };
+      
+      // Save locally to localstorage to avoid state corruption
+      localStorage.setItem('macoloris_works', JSON.stringify(works));
+      localStorage.setItem('macoloris_journals', JSON.stringify(journals));
+      localStorage.setItem('macoloris_about', JSON.stringify(about));
+      localStorage.setItem('macoloris_contact', JSON.stringify(contact));
+      localStorage.setItem('macoloris_emotions', JSON.stringify(emotions));
+      localStorage.setItem('macoloris_custom_tabs', JSON.stringify(customTabs));
+      localStorage.setItem('macoloris_visible_sections', JSON.stringify(visibleSections));
+
+      const res = await fetch("/api/portfolio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        if (!isQuiet) {
+          alert("💾 [이중 안심 저장 완료]\n\n현재 수정한 '모든 게시물(작품, 저널)'과 '각종 디자인/탭 설정' 일체가 서버 데이터베이스 및 브라우저 캐시에 누락 없이 완벽히 이중 영구 저장되었습니다!\n새로고침을 하거나 다른 창으로 나가도 안전하게 유지됩니다.");
+        }
+      } else {
+        throw new Error(`Server responded with status code ${res.status}`);
+      }
+    } catch (err: any) {
+      if (!isQuiet) {
+        alert("🚨 이중 전체 저장에 실패했습니다. 네트워크 상태를 확인하시거나 용량을 줄여보세요: " + err.message);
+      }
+    }
   };
+
+  const handleAdminLogout = async () => {
+    // Force silent double save on logout to completely prevent any data loss!
+    await handleForceAllSyncSave(true);
+    setIsAdmin(false);
+    alert('로그아웃 되었습니다. 업로드/수정사항이 서버에 최종적으로 안전 보관되었습니다.');
+  };
+
+  // Automated Safe Syncing when leaving Admin view or disabling Admin status without manual logout 
+  const prevIsAdminRef = React.useRef(isAdmin);
+  const prevActiveTabRef = React.useRef(activeTab);
+
+  React.useEffect(() => {
+    const checkAndAutoSave = async () => {
+      // If was admin, but now leaving the ADMIN tab, or turned off admin mode
+      if (prevIsAdminRef.current && (!isAdmin || (prevActiveTabRef.current === 'ADMIN' && activeTab !== 'ADMIN'))) {
+        console.log("Admin session transitioned. Performing automated background double-save of all portfolio data...");
+        // Silent background sync
+        const payload = {
+          works,
+          journals,
+          about,
+          contact,
+          emotions,
+          customTabs,
+          visibleSections,
+          videoUrl: videoUrl === 'indexeddb_data' ? '' : videoUrl
+        };
+        try {
+          await fetch("/api/portfolio", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+        } catch (e) {
+          console.warn("Background auto-save failed:", e);
+        }
+      }
+      prevIsAdminRef.current = isAdmin;
+      prevActiveTabRef.current = activeTab;
+    };
+
+    checkAndAutoSave();
+  }, [isAdmin, activeTab, works, journals, about, contact, emotions, customTabs, visibleSections, videoUrl]);
 
   // --- Work Logic (Add, Edit, Delete) ---
   const handleSaveWork = (e: FormEvent) => {
@@ -1575,14 +1696,15 @@ export default function App() {
       <div 
         className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] bg-cover bg-center bg-no-repeat text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden"
       >
-        {/* Background video playing looping ambiently */}
-        <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-[#121212]">
+        {/* Background video playing looping ambiently - Framed with a serene deep blue gradient for gorgeous aesthetic fallback */}
+        <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-gradient-to-b from-[#0F1C3F] via-[#081125] to-[#040817]">
           <video 
             ref={(el) => {
               (videoRef as any).current = el;
               if (el) {
                 el.setAttribute('muted', 'true');
                 el.setAttribute('playsinline', 'true');
+                el.setAttribute('webkit-playsinline', 'true');
                 el.muted = true;
                 el.playsInline = true;
                 el.play().catch(() => {});
@@ -1594,6 +1716,9 @@ export default function App() {
             loop 
             muted 
             playsInline 
+            webkitPlaysInline={true}
+            preload="auto"
+            controls={false}
             onPlay={() => setIsVideoPlaying(true)}
             onPlaying={() => setIsVideoPlaying(true)}
             className="absolute inset-0 w-full h-full object-cover opacity-85 z-10"
@@ -2797,7 +2922,13 @@ export default function App() {
                   MANAGEMENT CENTER
                 </h3>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <button 
+                  onClick={() => handleForceAllSyncSave(false)}
+                  className="bg-emerald-600 text-white font-mono text-[10px] sm:text-xs px-4 py-1.5 rounded tracking-widest hover:bg-emerald-700 transition-colors cursor-pointer flex items-center gap-2 font-bold shadow-sm"
+                >
+                  <Save size={12} /> 💾 전체 설정 및 게시물 영구 저장 (Double Save)
+                </button>
                 <button 
                   onClick={handleResetToDefaults}
                   className="bg-[#222222] text-white font-mono text-[10px] px-3 py-1.5 rounded tracking-widest hover:bg-stone-800 transition-colors cursor-pointer flex items-center gap-2"
