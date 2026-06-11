@@ -27,6 +27,38 @@ import fukuokaRainImg from './assets/images/fukuoka_rain_1780643028212.png';
 import blueStationImg from './assets/images/blue_station_1780643044740.png';
 import summerCrossingImg from './assets/images/summer_crossing_1780643057527.png';
 
+// --- Global Static Hosting Detection and Storage Protections ---
+let forcedStaticMode = false;
+
+const isStaticHosting = (): boolean => {
+  if (forcedStaticMode) return true;
+  if (typeof window === 'undefined') return false;
+  const hn = window.location.hostname;
+  return (
+    hn.endsWith('netlify.app') || 
+    hn.endsWith('github.io') || 
+    hn.endsWith('vercel.app') ||
+    hn.endsWith('workers.dev') ||
+    hn.endsWith('pages.dev') ||
+    hn.endsWith('web.app') ||
+    hn.endsWith('firebaseapp.com') ||
+    (hn === 'localhost' && window.location.port !== '3000')
+  );
+};
+
+// Global safe localStorage monkeypatch to prevent any QuotaExceededError crashes across the entire applet
+if (typeof window !== 'undefined') {
+  const originalSetItem = window.localStorage.setItem;
+  window.localStorage.setItem = function (key: string, value: string) {
+    try {
+      originalSetItem.call(window.localStorage, key, value);
+    } catch (e) {
+      console.warn(`[Safe Storage Protection] localStorage.setItem failed for key "${key}". Caught and swallowed to guarantee zero crashes:`, e);
+    }
+  };
+}
+
+
 // Premium high-quality photography presets for easy admin creation/replacement tasks
 const PHOTO_PRESETS = [
   { url: homeHeroImg, label: '후쿠오카 저물녘 (Blue Hour)' },
@@ -175,15 +207,23 @@ const convertHeicToJpg = async (file: File): Promise<File> => {
   return file;
 };
 
-const compressImageFile = async (file: File, maxW = 3200, maxH = 3200, quality = 0.88): Promise<string> => {
+const compressImageFile = async (file: File, maxW?: number, maxH?: number, quality?: number): Promise<string> => {
   try {
+    const isStatic = isStaticHosting();
+    
+    // Choose dynamic target parameters to balance HD photo quality vs static hosting storage quota (5MB)
+    const targetMaxW = maxW ?? (isStatic ? 1400 : 2048);
+    const targetMaxH = maxH ?? (isStatic ? 1400 : 2048);
+    const targetQuality = quality ?? (isStatic ? 0.76 : 0.82);
+    const skipSizeLimit = isStatic ? 80 * 1024 : 150 * 1024; // 80KB for static, 150KB for cloud backend
+
     // 1단계: HEIC/HEIF라면 웹 친화형 JPG로 백그라운드 자동 변환
     const processedFile = await convertHeicToJpg(file);
     
     // 2단계: 최상급 보정 퀄리티를 유지하면서 브라우저 렉 없이 스무스하게 최적화
     return new Promise((resolve) => {
       // 아주 작고 이미 최적화된 파일은 그대로 Data URL 변환하여 연산 낭비 최소화
-      if (processedFile.size < 350 * 1024) {
+      if (processedFile.size < skipSizeLimit) {
         const reader = new FileReader();
         reader.onload = (e) => {
           resolve(e.target?.result as string || '');
@@ -201,16 +241,15 @@ const compressImageFile = async (file: File, maxW = 3200, maxH = 3200, quality =
           let width = img.width;
           let height = img.height;
           
-          // SLR 카메라 대형 보정본도 완벽한 픽셀 보존을 위해 3200px 경계 보존
           if (width > height) {
-            if (width > maxW) {
-              height = Math.round((height * maxW) / width);
-              width = maxW;
+            if (width > targetMaxW) {
+              height = Math.round((height * targetMaxW) / width);
+              width = targetMaxW;
             }
           } else {
-            if (height > maxH) {
-              width = Math.round((width * maxH) / height);
-              height = maxH;
+            if (height > targetMaxH) {
+              width = Math.round((width * targetMaxH) / height);
+              height = targetMaxH;
             }
           }
           
@@ -224,9 +263,14 @@ const compressImageFile = async (file: File, maxW = 3200, maxH = 3200, quality =
             
             const mimeType = processedFile.type === 'image/png' ? 'image/png' : 'image/jpeg';
             if (mimeType === 'image/png') {
-              resolve(canvas.toDataURL('image/png'));
+              if (isStatic) {
+                // Convert heavy lossless PNGs to high-quality compressed JPEGs to stay beautifully under the 5MB quota
+                resolve(canvas.toDataURL('image/jpeg', targetQuality));
+              } else {
+                resolve(canvas.toDataURL('image/png'));
+              }
             } else {
-              resolve(canvas.toDataURL('image/jpeg', quality));
+              resolve(canvas.toDataURL('image/jpeg', targetQuality));
             }
           } else {
             resolve(e.target?.result as string || '');
@@ -253,7 +297,9 @@ const DEFAULT_VIDEO_URL = defaultVideo;
 const safeSetLocalStorage = (key: string, value: string): boolean => {
   try {
     localStorage.setItem(key, value);
-    return true;
+    // Double check that it actually stored the value and wasn't swallowed during a quota limit
+    const stored = localStorage.getItem(key);
+    return stored === value;
   } catch (error) {
     console.error(`Local storage write failed for key "${key}" (might exceed 5MB quota):`, error);
     return false;
@@ -608,12 +654,6 @@ export default function App() {
     setDragHoverJournalImageIdx(null);
   };
 
-  // --- Helper to detect typical static hosting environments without server backend support ---
-  const isStaticHosting = (): boolean => {
-    const hn = window.location.hostname;
-    return hn.endsWith('netlify.app') || hn.endsWith('github.io') || hn.endsWith('vercel.app');
-  };
-
   // --- Synchronize state with backend disk storage in real-time (Safe Partial Upload) ---
   const syncPortfolioWithServer = async (updatedOverride: {
     works?: Work[];
@@ -683,8 +723,23 @@ export default function App() {
         console.warn("Server API returned non-JSON response. Treating as static or fallback server.");
         return;
       }
-    } catch (err) {
-      console.error("Failed to sync with server db, rolling back optimistically modified state:", err);
+    } catch (err: any) {
+      console.error("Failed to sync with server db, checking fallback:", err);
+      
+      const errMsg = err?.message || "";
+      const isUnreachable = 
+        errMsg.includes("status code 404") || 
+        errMsg.includes("status code 405") || 
+        errMsg.includes("status code 502") || 
+        errMsg.includes("status code 500") || 
+        errMsg.includes("Failed to fetch") || 
+        err instanceof TypeError;
+
+      if (isUnreachable) {
+        console.warn("API Server endpoint is unreachable. Engaging auto safe offline-local storage persistence.");
+        forcedStaticMode = true;
+        return; // Complete silently without rolling back states, keeping deleting / adding edits local!
+      }
       
       // Rollback React State to maintain data consistency
       if (updatedOverride.works !== undefined) setWorks(previousWorks);
@@ -1774,12 +1829,41 @@ export default function App() {
 
   // If before first entrance, render full screen video cover exactly as requested
   if (!hasEntered) {
+    // Direct tap/click gesture handoff for maximum iOS Safari auto-play and user-unlock compliance
+    const handleInjectedInteraction = () => {
+      const v = videoRef.current;
+      if (v) {
+        v.muted = true;
+        v.playsInline = true;
+        v.play().then(() => {
+          setIsVideoPlaying(true);
+        }).catch(err => {
+          console.log("[Auto-Play] Direct cover click play context resolved:", err);
+          // Strong retry on user touch
+          try {
+            v.load();
+            v.play().then(() => setIsVideoPlaying(true)).catch(() => {});
+          } catch (r) {}
+        });
+      }
+    };
+
     return (
       <div 
-        className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] bg-cover bg-center bg-no-repeat text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden"
+        onClick={handleInjectedInteraction}
+        onTouchStart={handleInjectedInteraction}
+        className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] bg-cover bg-center bg-no-repeat text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden cursor-pointer"
       >
         {/* Background video playing looping ambiently - Framed with a serene deep blue gradient for gorgeous aesthetic fallback */}
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-gradient-to-b from-[#0F1C3F] via-[#081125] to-[#040817]">
+          {/* Cinematic Poster Fallback Background: Animates out smoothly when live video starts playing */}
+          <div 
+            className={`absolute inset-0 bg-cover bg-center transition-opacity duration-[1100ms] ease-out z-15 ${
+              isVideoPlaying ? 'opacity-0 pointer-events-none scale-102' : 'opacity-100 scale-100'
+            }`}
+            style={{ backgroundImage: `url(${blueStationImg})` }}
+          />
+
           <video 
             ref={(el) => {
               (videoRef as any).current = el;
@@ -1802,6 +1886,12 @@ export default function App() {
             controls={false}
             onPlay={() => setIsVideoPlaying(true)}
             onPlaying={() => setIsVideoPlaying(true)}
+            onError={() => {
+              console.warn("Landing video source failure. Reverting to base package default MP4 ambient video.");
+              if (videoUrl !== DEFAULT_VIDEO_URL) {
+                setVideoUrl(DEFAULT_VIDEO_URL);
+              }
+            }}
             className="absolute inset-0 w-full h-full object-cover opacity-85 z-10"
           />
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
