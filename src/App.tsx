@@ -250,6 +250,16 @@ const compressImageFile = async (file: File, maxW = 3200, maxH = 3200, quality =
 
 const DEFAULT_VIDEO_URL = defaultVideo;
 
+const safeSetLocalStorage = (key: string, value: string): boolean => {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.error(`Local storage write failed for key "${key}" (might exceed 5MB quota):`, error);
+    return false;
+  }
+};
+
 const isStaleAssetUrl = (url: string): boolean => {
   if (!url) return false;
   // If the URL describes our main video but does not equal the currently compiled production file route, it is stale
@@ -983,6 +993,7 @@ export default function App() {
     const video = videoRef.current;
     if (!video) return;
 
+    // Enforce highly compatible mobile video attributes on initial load
     video.muted = true;
     video.defaultMuted = true;
     video.playsInline = true;
@@ -991,6 +1002,20 @@ export default function App() {
     video.setAttribute('webkit-playsinline', 'true');
     video.setAttribute('autoplay', 'true');
     video.setAttribute('preload', 'auto');
+
+    // Force absolute conformance checking of autoplay properties (helps debug browser deviations)
+    const checkAutoplayAttributes = (imgVideo: HTMLVideoElement) => {
+      let isVerified = true;
+      if (!imgVideo.muted) { imgVideo.muted = true; isVerified = false; }
+      if (!imgVideo.playsInline) { imgVideo.playsInline = true; isVerified = false; }
+      if (imgVideo.getAttribute('preload') !== 'auto') { imgVideo.setAttribute('preload', 'auto'); isVerified = false; }
+      if (imgVideo.getAttribute('webkit-playsinline') !== 'true') { imgVideo.setAttribute('webkit-playsinline', 'true'); isVerified = false; }
+      if (!isVerified) {
+        console.log("Verified and re-aligned missing critical mobile video autoplay parameters.");
+      }
+    };
+
+    checkAutoplayAttributes(video);
 
     // Explicitly load the video source structure for iOS Safari stability
     try {
@@ -1016,10 +1041,34 @@ export default function App() {
     // Attach interaction fallbacks on first user touch/click/scroll in the document
     const startPlayOnInteraction = () => {
       if (videoRef.current) {
-        videoRef.current.play().then(() => {
+        const v = videoRef.current;
+        checkAutoplayAttributes(v);
+        
+        v.play().then(() => {
           setIsVideoPlaying(true);
-        }).catch(e => console.log("Play failed after interaction:", e));
+          console.log("Video cover successfully playing after verified user interaction!");
+        }).catch(e => {
+          console.warn("Mobile play prevented despite touch interaction, trying reload play:", e);
+          try {
+            v.load();
+            v.play().then(() => setIsVideoPlaying(true)).catch(err => console.log("Post-load play retry failed:", err));
+          } catch (rErr) {
+            console.error("Secondary recovery failed:", rErr);
+          }
+        });
       }
+
+      // Also loop over any general active video items inside lists or galleries
+      const allVideos = document.querySelectorAll('video');
+      allVideos.forEach(v => {
+        try {
+          checkAutoplayAttributes(v as HTMLVideoElement);
+          (v as HTMLVideoElement).play().catch(() => {});
+        } catch (someErr) {
+          // silent
+        }
+      });
+
       cleanupListeners();
     };
 
@@ -1028,12 +1077,16 @@ export default function App() {
       document.removeEventListener('click', startPlayOnInteraction);
       document.removeEventListener('touchend', startPlayOnInteraction);
       document.removeEventListener('scroll', startPlayOnInteraction);
+      document.removeEventListener('mousedown', startPlayOnInteraction);
+      document.removeEventListener('pointerdown', startPlayOnInteraction);
     };
 
     document.addEventListener('touchstart', startPlayOnInteraction, { passive: true });
     document.addEventListener('click', startPlayOnInteraction, { passive: true });
     document.addEventListener('touchend', startPlayOnInteraction, { passive: true });
     document.addEventListener('scroll', startPlayOnInteraction, { passive: true });
+    document.addEventListener('mousedown', startPlayOnInteraction, { passive: true });
+    document.addEventListener('pointerdown', startPlayOnInteraction, { passive: true });
 
     return () => {
       cleanupListeners();
@@ -1359,14 +1412,37 @@ export default function App() {
         videoUrl: videoUrl === 'indexeddb_data' ? '' : videoUrl
       };
       
-      // Save locally to localstorage to avoid state corruption
-      localStorage.setItem('macoloris_works', JSON.stringify(works));
-      localStorage.setItem('macoloris_journals', JSON.stringify(journals));
-      localStorage.setItem('macoloris_about', JSON.stringify(about));
-      localStorage.setItem('macoloris_contact', JSON.stringify(contact));
-      localStorage.setItem('macoloris_emotions', JSON.stringify(emotions));
-      localStorage.setItem('macoloris_custom_tabs', JSON.stringify(customTabs));
-      localStorage.setItem('macoloris_visible_sections', JSON.stringify(visibleSections));
+      // Save locally to localstorage to avoid state corruption, catching QuotaExceededError elegantly
+      let localSaveOk = true;
+      const keysToSave = [
+        { k: 'macoloris_works', v: JSON.stringify(works) },
+        { k: 'macoloris_journals', v: JSON.stringify(journals) },
+        { k: 'macoloris_about', v: JSON.stringify(about) },
+        { k: 'macoloris_contact', v: JSON.stringify(contact) },
+        { k: 'macoloris_emotions', v: JSON.stringify(emotions) },
+        { k: 'macoloris_custom_tabs', v: JSON.stringify(customTabs) },
+        { k: 'macoloris_visible_sections', v: JSON.stringify(visibleSections) }
+      ];
+
+      for (const item of keysToSave) {
+        if (!safeSetLocalStorage(item.k, item.v)) {
+          localSaveOk = false;
+        }
+      }
+
+      // Check if on a restricted static container (Netlify, Vercel etc.)
+      if (isStaticHosting()) {
+        if (localSaveOk) {
+          if (!isQuiet) {
+            alert("💾 [동기화 저장 완료 - 정적 호스팅]\n\n현재 정적 서버(Netlify 등) 환경입니다. 모든 포트폴리오 데이터가 브라우저 쿠키/LocalStorage에 안전하게 백업 및 저장되었습니다.");
+          }
+        } else {
+          if (!isQuiet) {
+            alert("⚠️ [브라우저 저장공간 한도 초과 안내]\n\n현재 Netlify 등의 정적 환경에서는 브라우저 자체 쿠키/LocalStorage 공간 한도(5MB)를 초과하여 일부 대용량 미디어가 포함된 데이터 저장이 제한되었습니다.\n\n해결 방법:\n1. 불필요하게 큰 이미지/고화질 사진들을 삭제 완료하거나 개수를 축소해 주십시오.\n2. API 서버가 탑재된 정식 클라우드 백엔드 환경에서는 기가바이트(GB) 단위 무제한 백엔드 영구 보관이 완벽히 지원됩니다.");
+          }
+        }
+        return;
+      }
 
       const res = await fetch("/api/portfolio", {
         method: "POST",
@@ -1376,7 +1452,13 @@ export default function App() {
 
       if (res.ok) {
         if (!isQuiet) {
-          alert("💾 [이중 안심 저장 완료]\n\n현재 수정한 '모든 게시물(작품, 저널)'과 '각종 디자인/탭 설정' 일체가 서버 데이터베이스 및 브라우저 캐시에 누락 없이 완벽히 이중 영구 저장되었습니다!\n새로고침을 하거나 다른 창으로 나가도 안전하게 유지됩니다.");
+          let message = "💾 [이중 안심 저장 완료]\n\n현재 수정한 '모든 게시물(작품, 저널)'과 '각종 디자인/탭 설정' 일체가 서버 데이터베이스에 안전하게 영구 저장되었습니다!";
+          if (!localSaveOk) {
+            message += "\n\n(안내: 브라우저 캐시 용량(5MB)이 초과되어 기기 자체 임시 캐싱은 제한되었으나, 클라우드 서버 데이터베이스 측에는 100% 온전하게 완벽 전송 및 저장되었습니다.)";
+          } else {
+            message += "\n새로고침을 하거나 다른 창으로 나가도 완전히 보존됩니다.";
+          }
+          alert(message);
         }
       } else {
         throw new Error(`Server responded with status code ${res.status}`);
@@ -1710,7 +1792,6 @@ export default function App() {
                 el.play().catch(() => {});
               }
             }}
-            key={videoUrl ? (videoUrl.startsWith('data:') ? 'base64_' + videoUrl.length : videoUrl) : 'default'}
             src={getPlayableVideoUrl(videoUrl)}
             autoPlay 
             loop 
