@@ -306,6 +306,41 @@ const safeSetLocalStorage = (key: string, value: string): boolean => {
   }
 };
 
+const isPortfolioDataValid = (data: any): boolean => {
+  if (!data || typeof data !== 'object') return false;
+
+  // 1. works validation is critical
+  if (data.works !== undefined) {
+    if (!Array.isArray(data.works)) return false;
+    for (const w of data.works) {
+      if (!w || typeof w !== 'object') return false;
+      if (typeof w.id !== 'string' || typeof w.title !== 'string') return false;
+      if (w.images !== undefined && !Array.isArray(w.images)) return false;
+    }
+  }
+
+  // 2. journals validation is critical
+  if (data.journals !== undefined) {
+    if (!Array.isArray(data.journals)) return false;
+    for (const j of data.journals) {
+      if (!j || typeof j !== 'object') return false;
+      if (typeof j.id !== 'string' || typeof j.title !== 'string') return false;
+      if (j.images !== undefined && !Array.isArray(j.images)) return false;
+    }
+  }
+
+  // 3. customTabs validation
+  if (data.customTabs !== undefined) {
+    if (!Array.isArray(data.customTabs)) return false;
+    for (const tab of data.customTabs) {
+      if (!tab || typeof tab !== 'object') return false;
+      if (typeof tab.id !== 'string' || typeof tab.name !== 'string') return false;
+    }
+  }
+
+  return true;
+};
+
 const isStaleAssetUrl = (url: string): boolean => {
   if (!url) return false;
   // If the URL describes our main video but does not equal the currently compiled production file route, it is stale
@@ -724,64 +759,38 @@ export default function App() {
         return;
       }
     } catch (err: any) {
-      console.error("Failed to sync with server db, checking fallback:", err);
-      
-      const errMsg = err?.message || "";
-      const isUnreachable = 
-        errMsg.includes("status code 404") || 
-        errMsg.includes("status code 405") || 
-        errMsg.includes("status code 502") || 
-        errMsg.includes("status code 500") || 
-        errMsg.includes("Failed to fetch") || 
-        err instanceof TypeError;
+      console.warn("Failed to sync with server, engaging auto safe offline-local storage persistence:", err);
+      // Removed forcedStaticMode = true; to allow retrying subsequent requests when network or server is ready.
 
-      if (isUnreachable) {
-        console.warn("API Server endpoint is unreachable. Engaging auto safe offline-local storage persistence.");
-        forcedStaticMode = true;
-        return; // Complete silently without rolling back states, keeping deleting / adding edits local!
-      }
-      
-      // Rollback React State to maintain data consistency
-      if (updatedOverride.works !== undefined) setWorks(previousWorks);
-      if (updatedOverride.journals !== undefined) setJournals(previousJournals);
-      if (updatedOverride.about !== undefined) setAbout(previousAbout);
-      if (updatedOverride.contact !== undefined) setContact(previousContact);
-      if (updatedOverride.emotions !== undefined) setEmotions(previousEmotions);
-      if (updatedOverride.customTabs !== undefined) setCustomTabs(previousCustomTabs);
-      if (updatedOverride.visibleSections !== undefined) setVisibleSections(previousVisibleSections);
-      if (updatedOverride.videoUrl !== undefined) setVideoUrl(previousVideoUrl);
-
-      // Rollback Local Storage State to prevent stale client-side caches
+      // Save updated configuration directly into local storage, ensuring no edits are lost or rolled back
       try {
         if (updatedOverride.works !== undefined) {
-          localStorage.setItem('macoloris_works', JSON.stringify(previousWorks));
+          safeSetLocalStorage('macoloris_works', JSON.stringify(updatedOverride.works));
         }
         if (updatedOverride.journals !== undefined) {
-          localStorage.setItem('macoloris_journals', JSON.stringify(previousJournals));
+          safeSetLocalStorage('macoloris_journals', JSON.stringify(updatedOverride.journals));
         }
         if (updatedOverride.about !== undefined) {
-          localStorage.setItem('macoloris_about', JSON.stringify(previousAbout));
+          safeSetLocalStorage('macoloris_about', JSON.stringify(updatedOverride.about));
         }
         if (updatedOverride.contact !== undefined) {
-          localStorage.setItem('macoloris_contact', JSON.stringify(previousContact));
+          safeSetLocalStorage('macoloris_contact', JSON.stringify(updatedOverride.contact));
         }
         if (updatedOverride.emotions !== undefined) {
-          localStorage.setItem('macoloris_emotions', JSON.stringify(previousEmotions));
+          safeSetLocalStorage('macoloris_emotions', JSON.stringify(updatedOverride.emotions));
         }
         if (updatedOverride.customTabs !== undefined) {
-          localStorage.setItem('macoloris_custom_tabs', JSON.stringify(previousCustomTabs));
+          safeSetLocalStorage('macoloris_custom_tabs', JSON.stringify(updatedOverride.customTabs));
         }
         if (updatedOverride.visibleSections !== undefined) {
-          localStorage.setItem('macoloris_visible_sections', JSON.stringify(previousVisibleSections));
+          safeSetLocalStorage('macoloris_visible_sections', JSON.stringify(updatedOverride.visibleSections));
         }
         if (updatedOverride.videoUrl !== undefined) {
-          localStorage.setItem('macoloris_video_url', previousVideoUrl);
+          safeSetLocalStorage('macoloris_video_url', updatedOverride.videoUrl);
         }
       } catch (storageErr) {
-        console.warn("Could not rollback local storage:", storageErr);
+        console.warn("Could not write to local storage during fallback:", storageErr);
       }
-
-      alert("⚠️ 서버 게시물 업로드 동기화 도중 지연/오류가 감지되어, 기존에 안전하게 유지되던 상태로 즉시 복원되었습니다. (네트워크 연결 혹은 대용량 비디오 형식을 다시 한 번 검토해주세요.)");
     }
   };
 
@@ -824,6 +833,11 @@ export default function App() {
         try {
           const raw = event.target?.result as string;
           const data = JSON.parse(raw);
+          
+          if (!isPortfolioDataValid(data)) {
+            alert("⚠️ 가져온 백업 데이터의 파일 디자인/구조가 올바르지 않거나 일부 필수 내용이 누락되었습니다. 복구를 위해 데이터 가져오기가 취소되었습니다.");
+            return;
+          }
           
           if (data.works) {
             setWorks(data.works);
@@ -888,7 +902,12 @@ export default function App() {
         if (res.ok) {
           const parsed = await res.json();
           if (parsed && parsed.status !== "none") {
-            serverData = parsed;
+            // Apply strict structural validation on data loaded from API before updating state
+            if (isPortfolioDataValid(parsed)) {
+              serverData = parsed;
+            } else {
+              console.warn("⚠️ Loaded server API database is structurally corrupted or invalid! Keeping last known safe local configurations.");
+            }
           }
         }
       } catch (err) {
@@ -902,7 +921,18 @@ export default function App() {
       } else {
         const storedWorks = localStorage.getItem('macoloris_works');
         if (storedWorks) {
-          setWorks(JSON.parse(storedWorks));
+          try {
+            const parsed = JSON.parse(storedWorks);
+            if (Array.isArray(parsed) && parsed.every(w => w && typeof w.id === 'string' && typeof w.title === 'string')) {
+              setWorks(parsed);
+            } else {
+              throw new Error("Works structure corrupted");
+            }
+          } catch (e) {
+            console.warn("Local works storage was corrupted, rolling back to clean initial preset:", e);
+            setWorks(INITIAL_WORKS);
+            localStorage.setItem('macoloris_works', JSON.stringify(INITIAL_WORKS));
+          }
         } else {
           setWorks(INITIAL_WORKS);
           localStorage.setItem('macoloris_works', JSON.stringify(INITIAL_WORKS));
@@ -916,7 +946,18 @@ export default function App() {
       } else {
         const storedJournals = localStorage.getItem('macoloris_journals');
         if (storedJournals) {
-          setJournals(JSON.parse(storedJournals));
+          try {
+            const parsed = JSON.parse(storedJournals);
+            if (Array.isArray(parsed) && parsed.every(j => j && typeof j.id === 'string' && typeof j.title === 'string')) {
+              setJournals(parsed);
+            } else {
+              throw new Error("Journals structure corrupted");
+            }
+          } catch (e) {
+            console.warn("Local journals storage was corrupted, rolling back to clean initial preset:", e);
+            setJournals(INITIAL_JOURNALS);
+            localStorage.setItem('macoloris_journals', JSON.stringify(INITIAL_JOURNALS));
+          }
         } else {
           setJournals(INITIAL_JOURNALS);
           localStorage.setItem('macoloris_journals', JSON.stringify(INITIAL_JOURNALS));
@@ -930,7 +971,12 @@ export default function App() {
       } else {
         const storedAbout = localStorage.getItem('macoloris_about');
         if (storedAbout) {
-          setAbout(JSON.parse(storedAbout));
+          try {
+            setAbout(JSON.parse(storedAbout));
+          } catch (e) {
+            setAbout(INITIAL_ABOUT);
+            localStorage.setItem('macoloris_about', JSON.stringify(INITIAL_ABOUT));
+          }
         } else {
           setAbout(INITIAL_ABOUT);
           localStorage.setItem('macoloris_about', JSON.stringify(INITIAL_ABOUT));
@@ -944,12 +990,17 @@ export default function App() {
       } else {
         const storedContact = localStorage.getItem('macoloris_contact');
         if (storedContact) {
-          const parsedContact = JSON.parse(storedContact);
-          if (parsedContact.email === 'j7o8945@gmail.com') {
-            parsedContact.email = 'fkdlsh74jp@gmail.com';
-            localStorage.setItem('macoloris_contact', JSON.stringify(parsedContact));
+          try {
+            const parsedContact = JSON.parse(storedContact);
+            if (parsedContact.email === 'j7o8945@gmail.com') {
+              parsedContact.email = 'fkdlsh74jp@gmail.com';
+              localStorage.setItem('macoloris_contact', JSON.stringify(parsedContact));
+            }
+            setContact(parsedContact);
+          } catch (e) {
+            setContact(INITIAL_CONTACT);
+            localStorage.setItem('macoloris_contact', JSON.stringify(INITIAL_CONTACT));
           }
-          setContact(parsedContact);
         } else {
           setContact(INITIAL_CONTACT);
           localStorage.setItem('macoloris_contact', JSON.stringify(INITIAL_CONTACT));
@@ -1858,24 +1909,14 @@ export default function App() {
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-gradient-to-b from-[#0F1C3F] via-[#081125] to-[#040817]">
           {/* Cinematic Poster Fallback Background: Animates out smoothly when live video starts playing */}
           <div 
-            className={`absolute inset-0 bg-cover bg-center transition-opacity duration-[1100ms] ease-out z-15 ${
+            className={`absolute inset-0 bg-cover bg-center transition-opacity duration-[1100ms] ease-out z-10 ${
               isVideoPlaying ? 'opacity-0 pointer-events-none scale-102' : 'opacity-100 scale-100'
             }`}
             style={{ backgroundImage: `url(${blueStationImg})` }}
           />
 
           <video 
-            ref={(el) => {
-              (videoRef as any).current = el;
-              if (el) {
-                el.setAttribute('muted', 'true');
-                el.setAttribute('playsinline', 'true');
-                el.setAttribute('webkit-playsinline', 'true');
-                el.muted = true;
-                el.playsInline = true;
-                el.play().catch(() => {});
-              }
-            }}
+            ref={videoRef}
             src={getPlayableVideoUrl(videoUrl)}
             autoPlay 
             loop 
@@ -1892,11 +1933,13 @@ export default function App() {
                 setVideoUrl(DEFAULT_VIDEO_URL);
               }
             }}
-            className="absolute inset-0 w-full h-full object-cover opacity-85 z-10"
+            className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ease-out z-20 ${
+              isVideoPlaying ? 'opacity-100' : 'opacity-0'
+            }`}
           />
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
-          <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65 z-20"></div>
-          <div className="absolute inset-0 bg-black/40 z-20"></div>
+          <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/20 to-black/65 z-30"></div>
+          <div className="absolute inset-0 bg-black/40 z-30"></div>
         </div>
 
         {/* Header on top of cover */}
@@ -2427,11 +2470,13 @@ export default function App() {
                             key={work.images[0]}
                             ref={(el) => {
                               if (el) {
-                                el.setAttribute('muted', 'true');
-                                el.setAttribute('playsinline', 'true');
-                                el.muted = true;
-                                el.playsInline = true;
-                                el.play().catch(() => {});
+                                  el.setAttribute('muted', 'true');
+                                  el.setAttribute('playsinline', 'true');
+                                  el.muted = true;
+                                  el.playsInline = true;
+                                  if (el.paused) {
+                                    el.play().catch(() => {});
+                                  }
                               }
                             }}
                             src={getPlayableVideoUrl(work.images[0])} 
@@ -2527,7 +2572,9 @@ export default function App() {
                         el.setAttribute('playsinline', 'true');
                         el.muted = true;
                         el.playsInline = true;
-                        el.play().catch(() => {});
+                        if (el.paused) {
+                          el.play().catch(() => {});
+                        }
                       }
                     }}
                     src={getPlayableVideoUrl(activeWorkDetail.images[activePhotoIndex])} 
@@ -2651,7 +2698,9 @@ export default function App() {
                               el.setAttribute('playsinline', 'true');
                               el.muted = true;
                               el.playsInline = true;
-                              el.play().catch(() => {});
+                              if (el.paused) {
+                                el.play().catch(() => {});
+                              }
                             }
                           }}
                           src={getPlayableVideoUrl(work.images[0])} 
@@ -2804,7 +2853,9 @@ export default function App() {
                                       el.setAttribute('playsinline', 'true');
                                       el.muted = true;
                                       el.playsInline = true;
-                                      el.play().catch(() => {});
+                                      if (el.paused) {
+                                        el.play().catch(() => {});
+                                      }
                                     }
                                   }}
                                   src={getPlayableVideoUrl(matchingWork.images[0])} 
@@ -2899,7 +2950,9 @@ export default function App() {
                                   el.setAttribute('playsinline', 'true');
                                   el.muted = true;
                                   el.playsInline = true;
-                                  el.play().catch(() => {});
+                                  if (el.paused) {
+                                    el.play().catch(() => {});
+                                  }
                                 }
                               }}
                               src={getPlayableVideoUrl(imgUrl)} 
@@ -3419,7 +3472,9 @@ export default function App() {
                                             el.setAttribute('playsinline', 'true');
                                             el.muted = true;
                                             el.playsInline = true;
-                                            el.play().catch(() => {});
+                                            if (el.paused) {
+                                              el.play().catch(() => {});
+                                            }
                                           }
                                         }}
                                         muted 
@@ -3559,7 +3614,9 @@ export default function App() {
                                 el.setAttribute('playsinline', 'true');
                                 el.muted = true;
                                 el.playsInline = true;
-                                el.play().catch(() => {});
+                                if (el.paused) {
+                                  el.play().catch(() => {});
+                                }
                               }
                             }}
                             muted
@@ -4476,7 +4533,9 @@ export default function App() {
                                             el.setAttribute('playsinline', 'true');
                                             el.muted = true;
                                             el.playsInline = true;
-                                            el.play().catch(() => {});
+                                            if (el.paused) {
+                                              el.play().catch(() => {});
+                                            }
                                           }
                                         }}
                                         muted 
