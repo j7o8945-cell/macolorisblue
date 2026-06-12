@@ -444,6 +444,7 @@ export default function App() {
   const [tempVideoFile, setTempVideoFile] = useState<File | null>(null);
   const [isVideoReady, setIsVideoReady] = useState<boolean>(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
+  const [isIntroVideoLive, setIsIntroVideoLive] = useState<boolean>(false);
   const videoRef = React.useRef<HTMLVideoElement>(null);
   
   // --- Custom Tab/Sections States ---
@@ -1096,6 +1097,9 @@ export default function App() {
 
   // Programmatically trigger video load & play to bypass aggressive mobile browser restrictions
   useEffect(() => {
+    // Reset live status whenever video URL modifications occur
+    setIsIntroVideoLive(false);
+
     const video = videoRef.current;
     if (!video) return;
 
@@ -1144,7 +1148,16 @@ export default function App() {
     // Try playing immediately
     playVideo();
 
-    // Attach interaction fallbacks on first user touch/click/scroll in the document
+    const cleanupListeners = () => {
+      document.removeEventListener('touchstart', startPlayOnInteraction);
+      document.removeEventListener('click', startPlayOnInteraction);
+      document.removeEventListener('touchend', startPlayOnInteraction);
+      document.removeEventListener('scroll', startPlayOnInteraction);
+      document.removeEventListener('mousedown', startPlayOnInteraction);
+      document.removeEventListener('pointerdown', startPlayOnInteraction);
+    };
+
+    // Attach interaction fallbacks on user touch/click/scroll in the document
     const startPlayOnInteraction = () => {
       if (videoRef.current) {
         const v = videoRef.current;
@@ -1153,11 +1166,15 @@ export default function App() {
         v.play().then(() => {
           setIsVideoPlaying(true);
           console.log("Video cover successfully playing after verified user interaction!");
+          cleanupListeners(); // Only clean up when we successfully played!
         }).catch(e => {
           console.warn("Mobile play prevented despite touch interaction, trying reload play:", e);
           try {
             v.load();
-            v.play().then(() => setIsVideoPlaying(true)).catch(err => console.log("Post-load play retry failed:", err));
+            v.play().then(() => {
+              setIsVideoPlaying(true);
+              cleanupListeners(); // Clean up on success
+            }).catch(err => console.log("Post-load play retry failed:", err));
           } catch (rErr) {
             console.error("Secondary recovery failed:", rErr);
           }
@@ -1174,17 +1191,6 @@ export default function App() {
           // silent
         }
       });
-
-      cleanupListeners();
-    };
-
-    const cleanupListeners = () => {
-      document.removeEventListener('touchstart', startPlayOnInteraction);
-      document.removeEventListener('click', startPlayOnInteraction);
-      document.removeEventListener('touchend', startPlayOnInteraction);
-      document.removeEventListener('scroll', startPlayOnInteraction);
-      document.removeEventListener('mousedown', startPlayOnInteraction);
-      document.removeEventListener('pointerdown', startPlayOnInteraction);
     };
 
     document.addEventListener('touchstart', startPlayOnInteraction, { passive: true });
@@ -1909,14 +1915,49 @@ export default function App() {
         <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-gradient-to-b from-[#0F1C3F] via-[#081125] to-[#040817]">
           {/* Cinematic Poster Fallback Background: Animates out smoothly when live video starts playing */}
           <div 
-            className={`absolute inset-0 bg-cover bg-center transition-opacity duration-[1100ms] ease-out z-10 ${
-              isVideoPlaying ? 'opacity-0 pointer-events-none scale-102' : 'opacity-100 scale-100'
+            className={`absolute inset-0 bg-cover bg-center transition-all duration-[1200ms] ease-out z-10 ${
+              isIntroVideoLive ? 'opacity-0 scale-102 pointer-events-none' : 'opacity-100 scale-100'
             }`}
             style={{ backgroundImage: `url(${blueStationImg})` }}
           />
 
+          {/* Smooth Blur Overlay and Sleek Minimalist Loading Spinner for pre-play buffer state */}
+          <div 
+            className={`absolute inset-0 bg-black/35 backdrop-blur-[8px] flex flex-col items-center justify-center transition-all duration-[800ms] ease-out pointer-events-none z-15 ${
+              isIntroVideoLive ? 'opacity-0 scale-95' : 'opacity-100'
+            }`}
+          >
+            <div className="flex flex-col items-center gap-4">
+              <div className="w-9 h-9 border-2 border-white/10 border-t-white/85 rounded-full animate-spin" />
+              <div className="text-center">
+                <span className="text-[10px] tracking-[0.35em] text-white/80 uppercase font-mono animate-pulse">
+                  Rendering Ambient Space
+                </span>
+                <p className="text-[8px] tracking-[0.2em] text-white/40 uppercase font-mono mt-1">
+                  Stabilizing video streams
+                </p>
+              </div>
+            </div>
+          </div>
+
           <video 
-            ref={videoRef}
+            ref={(el) => {
+              (videoRef as any).current = el;
+              if (el) {
+                // Keep properties strictly in sync to bypass aggressive mobile boundaries on dynamic mounts
+                el.setAttribute('muted', 'true');
+                el.setAttribute('playsinline', 'true');
+                el.setAttribute('webkit-playsinline', 'true');
+                el.muted = true;
+                el.defaultMuted = true;
+                el.playsInline = true;
+                if (el.paused) {
+                  el.play().then(() => {
+                    setIsVideoPlaying(true);
+                  }).catch(() => {});
+                }
+              }
+            }}
             src={getPlayableVideoUrl(videoUrl)}
             autoPlay 
             loop 
@@ -1927,6 +1968,14 @@ export default function App() {
             controls={false}
             onPlay={() => setIsVideoPlaying(true)}
             onPlaying={() => setIsVideoPlaying(true)}
+            onTimeUpdate={(e) => {
+              // TimeUpdate event gives us mathematically absolute guarantee that frames are decoding and streaming
+              const v = e.currentTarget;
+              if (v.currentTime > 0) {
+                setIsIntroVideoLive(true);
+                setIsVideoPlaying(true);
+              }
+            }}
             onError={() => {
               console.warn("Landing video source failure. Reverting to base package default MP4 ambient video.");
               if (videoUrl !== DEFAULT_VIDEO_URL) {
@@ -1934,7 +1983,7 @@ export default function App() {
               }
             }}
             className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ease-out z-20 ${
-              isVideoPlaying ? 'opacity-100' : 'opacity-0'
+              isIntroVideoLive ? 'opacity-100' : 'opacity-0'
             }`}
           />
           {/* Subtle vignette/shading mask to mimic photographic depth and secure text readability */}
