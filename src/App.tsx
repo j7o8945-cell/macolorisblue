@@ -445,6 +445,7 @@ export default function App() {
   const [isVideoReady, setIsVideoReady] = useState<boolean>(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
   const [isIntroVideoLive, setIsIntroVideoLive] = useState<boolean>(false);
+  const [showPlayTrigger, setShowPlayTrigger] = useState<boolean>(false);
   const videoRef = React.useRef<HTMLVideoElement>(null);
   
   // --- Custom Tab/Sections States ---
@@ -1097,8 +1098,9 @@ export default function App() {
 
   // Programmatically trigger video load & play to bypass aggressive mobile browser restrictions
   useEffect(() => {
-    // Reset live status whenever video URL modifications occur
+    // Reset live and trigger states whenever video URL modifications occur
     setIsIntroVideoLive(false);
+    setShowPlayTrigger(false);
 
     const video = videoRef.current;
     if (!video) return;
@@ -1139,6 +1141,8 @@ export default function App() {
       if (playPromise !== undefined) {
         playPromise.then(() => {
           setIsVideoPlaying(true);
+          // Set live immediately once play succeeds as a fast-track safeguard
+          setIsIntroVideoLive(true);
         }).catch(error => {
           console.log("Autoplay was prevented by mobile browser. Retrying muted play on action:", error);
         });
@@ -1147,6 +1151,13 @@ export default function App() {
 
     // Try playing immediately
     playVideo();
+
+    // After 1.5 seconds of silence, show the elegant tap interaction prompt to unlock autoplay
+    const triggerTimeout = setTimeout(() => {
+      if (!videoRef.current || videoRef.current.paused || videoRef.current.currentTime === 0) {
+        setShowPlayTrigger(true);
+      }
+    }, 1500);
 
     const cleanupListeners = () => {
       document.removeEventListener('touchstart', startPlayOnInteraction);
@@ -1165,6 +1176,8 @@ export default function App() {
         
         v.play().then(() => {
           setIsVideoPlaying(true);
+          setIsIntroVideoLive(true);
+          setShowPlayTrigger(false);
           console.log("Video cover successfully playing after verified user interaction!");
           cleanupListeners(); // Only clean up when we successfully played!
         }).catch(e => {
@@ -1173,6 +1186,8 @@ export default function App() {
             v.load();
             v.play().then(() => {
               setIsVideoPlaying(true);
+              setIsIntroVideoLive(true);
+              setShowPlayTrigger(false);
               cleanupListeners(); // Clean up on success
             }).catch(err => console.log("Post-load play retry failed:", err));
           } catch (rErr) {
@@ -1201,6 +1216,7 @@ export default function App() {
     document.addEventListener('pointerdown', startPlayOnInteraction, { passive: true });
 
     return () => {
+      clearTimeout(triggerTimeout);
       cleanupListeners();
     };
   }, [videoUrl, isVideoReady, hasEntered]);
@@ -1894,12 +1910,18 @@ export default function App() {
         v.playsInline = true;
         v.play().then(() => {
           setIsVideoPlaying(true);
+          setIsIntroVideoLive(true);
+          setShowPlayTrigger(false);
         }).catch(err => {
           console.log("[Auto-Play] Direct cover click play context resolved:", err);
           // Strong retry on user touch
           try {
             v.load();
-            v.play().then(() => setIsVideoPlaying(true)).catch(() => {});
+            v.play().then(() => {
+              setIsVideoPlaying(true);
+              setIsIntroVideoLive(true);
+              setShowPlayTrigger(false);
+            }).catch(() => {});
           } catch (r) {}
         });
       }
@@ -1909,34 +1931,51 @@ export default function App() {
       <div 
         onClick={handleInjectedInteraction}
         onTouchStart={handleInjectedInteraction}
-        className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-[#121212] bg-cover bg-center bg-no-repeat text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden cursor-pointer"
+        className="relative w-full h-[100dvh] min-h-[450px] sm:min-h-[550px] md:min-h-[650px] bg-black text-white font-serif select-none flex flex-col justify-between p-4 sm:p-8 md:p-12 z-0 overflow-hidden cursor-pointer"
       >
-        {/* Background video playing looping ambiently - Framed with a serene deep blue gradient for gorgeous aesthetic fallback */}
-        <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-gradient-to-b from-[#0F1C3F] via-[#081125] to-[#040817]">
-          {/* Cinematic Poster Fallback Background: Animates out smoothly when live video starts playing */}
+        {/* Background video playing looping ambiently - Framed with a pitch-black fallback canvas */}
+        <div className="absolute inset-0 w-full h-full z-[-1] overflow-hidden bg-black">
+          {/* Pure Cinematic Black Fallback: Keeps the screen pitch black, absolutely preventing the example photo from flashing */}
           <div 
-            className={`absolute inset-0 bg-cover bg-center transition-all duration-[1200ms] ease-out z-10 ${
-              isIntroVideoLive ? 'opacity-0 scale-102 pointer-events-none' : 'opacity-100 scale-100'
+            className={`absolute inset-0 bg-black transition-opacity duration-[1100ms] ease-out z-10 ${
+              isIntroVideoLive ? 'opacity-0 pointer-events-none' : 'opacity-100'
             }`}
-            style={{ backgroundImage: `url(${blueStationImg})` }}
           />
 
           {/* Smooth Blur Overlay and Sleek Minimalist Loading Spinner for pre-play buffer state */}
           <div 
-            className={`absolute inset-0 bg-black/35 backdrop-blur-[8px] flex flex-col items-center justify-center transition-all duration-[800ms] ease-out pointer-events-none z-15 ${
-              isIntroVideoLive ? 'opacity-0 scale-95' : 'opacity-100'
+            className={`absolute inset-0 bg-black/60 backdrop-blur-[12px] flex flex-col items-center justify-center transition-all duration-[1000ms] ease-out z-15 ${
+              isIntroVideoLive ? 'opacity-0 scale-95 pointer-events-none' : 'opacity-100'
             }`}
           >
-            <div className="flex flex-col items-center gap-4">
-              <div className="w-9 h-9 border-2 border-white/10 border-t-white/85 rounded-full animate-spin" />
-              <div className="text-center">
-                <span className="text-[10px] tracking-[0.35em] text-white/80 uppercase font-mono animate-pulse">
+            <div className="flex flex-col items-center gap-6 px-6 max-w-sm text-center">
+              {/* Spinning visual with subtle pulse background glow */}
+              <div className="relative flex items-center justify-center">
+                <div className="absolute inset-0 w-10 h-10 rounded-full border-2 border-white/5 animate-pulse blur-[1px]" />
+                <div className="w-10 h-10 border-2 border-white/10 border-t-white/85 rounded-full animate-spin" />
+              </div>
+              
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10px] tracking-[0.4em] text-white/95 uppercase font-mono animate-pulse">
                   Rendering Ambient Space
                 </span>
-                <p className="text-[8px] tracking-[0.2em] text-white/40 uppercase font-mono mt-1">
-                  Stabilizing video streams
+                <p className="text-[8px] tracking-[0.25em] text-white/40 uppercase font-mono">
+                  Optimizing art presentation flow
                 </p>
               </div>
+
+              {/* Seamless mobile/tablet safe screen touch trigger prompt */}
+              {showPlayTrigger && (
+                <div className="mt-8 p-3 px-5 rounded-lg bg-white/5 border border-white/10 shadow-xl pointer-events-auto transform active:scale-95 transition-all duration-300 animate-fadeIn flex flex-col items-center gap-1.5 backdrop-blur-md">
+                  <span className="text-[10px] font-mono text-white/85 tracking-[0.15em] flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 bg-[#4A6FA5] rounded-full animate-ping" />
+                    Tap Anywhere to Begin
+                  </span>
+                  <span className="text-[8px] font-mono text-white/40 tracking-[0.1em] leading-relaxed">
+                    (미디어 자동재생 지원용 화면 터치 활성화)
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
